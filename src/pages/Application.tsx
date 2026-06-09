@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useRef, useEffect, useCallback } from 'react'
 import {
   Edit3,
   CheckCircle2,
@@ -12,9 +12,18 @@ import {
   Eye,
   Save,
   RotateCcw,
+  Loader2,
+  AlertCircle,
 } from 'lucide-react'
 import { UploadZone } from '@/components/ui'
 import { cn } from '@/utils/helpers'
+import {
+  useAppStore,
+  createFileInfo,
+  formatFileSize,
+  type UploadZoneKey,
+  type UploadedFileInfo,
+} from '@/store/useAppStore'
 
 function numberToChinese(num: number): string {
   if (!num && num !== 0) return ''
@@ -61,6 +70,21 @@ interface Contact {
   company: string
 }
 
+const APPLICATION_ID = 'LA20260609001'
+
+const createIdCardFrontDefault = (): UploadedFileInfo[] => [
+  {
+    name: '张三-身份证正面.jpg',
+    size: 2.1 * 1024 * 1024,
+    type: 'image/jpeg',
+    lastModified: Date.now(),
+    uploadedAt: new Date().toISOString(),
+    status: 'success',
+    progress: 100,
+    previewUrl: undefined,
+  },
+]
+
 export default function Application() {
   const [loanAmount, setLoanAmount] = useState<number>(50)
 
@@ -73,6 +97,17 @@ export default function Application() {
     emergency: { name: '', relation: '配偶', phone: '', company: '' },
     colleague: { name: '', relation: '同事', phone: '', company: '' },
   })
+
+  const { uploads, setUploadedFiles, clearUploadedFiles } = useAppStore()
+
+  const faceInputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    const current = uploads[APPLICATION_ID]?.['idCardFront']
+    if (!current || current.length === 0) {
+      setUploadedFiles(APPLICATION_ID, 'idCardFront', createIdCardFrontDefault())
+    }
+  }, [uploads, setUploadedFiles])
 
   const updateContact = (
     type: 'family' | 'emergency' | 'colleague',
@@ -94,8 +129,229 @@ export default function Application() {
     { label: '贷款信息', status: 'pending' },
   ] as const
 
-  const uploadedFiles = {
-    idFront: { name: '身份证正面.jpg', uploaded: true },
+  const getUploadedFiles = useCallback(
+    (zoneKey: UploadZoneKey): UploadedFileInfo[] | undefined => {
+      return uploads[APPLICATION_ID]?.[zoneKey]
+    },
+    [uploads]
+  )
+
+  const handleFilesSelected = useCallback(
+    (zoneKey: UploadZoneKey, multiple: boolean) =>
+      (files: FileList | null) => {
+        if (!files || files.length === 0) return
+
+        const fileInfos: UploadedFileInfo[] = []
+        for (let i = 0; i < files.length; i++) {
+          const file = files[i]
+          const info = createFileInfo(file)
+          if (file.type.startsWith('image/')) {
+            info.previewUrl = URL.createObjectURL(file)
+          }
+          fileInfos.push(info)
+        }
+
+        if (multiple) {
+          const existing = uploads[APPLICATION_ID]?.[zoneKey] ?? []
+          setUploadedFiles(APPLICATION_ID, zoneKey, [...existing, ...fileInfos])
+        } else {
+          setUploadedFiles(APPLICATION_ID, zoneKey, fileInfos)
+        }
+      },
+    [uploads, setUploadedFiles]
+  )
+
+  const handleRemove = useCallback(
+    (zoneKey: UploadZoneKey, multiple: boolean) =>
+      (index: number) => {
+        const existing = uploads[APPLICATION_ID]?.[zoneKey] ?? []
+        if (multiple) {
+          const updated = existing.filter((_, i) => i !== index)
+          if (updated.length === 0) {
+            clearUploadedFiles(APPLICATION_ID, zoneKey)
+          } else {
+            setUploadedFiles(APPLICATION_ID, zoneKey, updated)
+          }
+        } else {
+          clearUploadedFiles(APPLICATION_ID, zoneKey)
+        }
+      },
+    [uploads, setUploadedFiles, clearUploadedFiles]
+  )
+
+  const idCardFrontFiles = getUploadedFiles('idCardFront')
+  const idCardBackFiles = getUploadedFiles('idCardBack')
+  const bankCardFiles = getUploadedFiles('bankCard')
+  const workProofFiles = getUploadedFiles('workProof')
+  const incomeProofFiles = getUploadedFiles('incomeProof')
+  const faceCaptureFiles = getUploadedFiles('faceCapture')
+
+  const renderIdCardFrontPreview = (file: UploadedFileInfo) => (
+    <div className="relative rounded-2xl border-2 border-emerald-200 bg-emerald-50/50 overflow-hidden group">
+      {file.previewUrl ? (
+        <div className="aspect-[1.58/1] bg-slate-100 flex items-center justify-center relative overflow-hidden">
+          <img
+            src={file.previewUrl}
+            alt={file.name}
+            className="w-full h-full object-cover"
+          />
+        </div>
+      ) : (
+        <div className="aspect-[1.58/1] bg-slate-100 flex items-center justify-center relative">
+          <div className="absolute inset-0 bg-gradient-to-br from-blue-50 via-white to-red-50" />
+          <div className="relative z-10 p-6 w-full h-full flex flex-col">
+            <div className="flex items-start justify-between">
+              <div>
+                <div className="text-xs text-slate-500 mb-1">姓 名</div>
+                <div className="text-sm font-medium text-slate-800">张 三</div>
+              </div>
+              <div className="w-16 h-20 bg-slate-200 rounded flex items-center justify-center text-slate-400 text-xs">
+                头像
+              </div>
+            </div>
+            <div className="mt-auto space-y-1">
+              <div className="flex gap-4 text-xs">
+                <span className="text-slate-500">性 别 男</span>
+                <span className="text-slate-500">民 族 汉</span>
+              </div>
+              <div className="text-xs text-slate-500">出 生 1990年01月01日</div>
+              <div className="text-xs text-slate-500">住 址 北京市朝阳区xxx</div>
+              <div className="text-xs text-slate-500">公民身份号码 110101199001011234</div>
+            </div>
+          </div>
+        </div>
+      )}
+      <div className="px-4 py-3 bg-white border-t border-emerald-100 flex items-center justify-between">
+        <div className="flex items-center gap-2 min-w-0">
+          <FileText className="w-4 h-4 text-emerald-500 flex-shrink-0" />
+          <div className="min-w-0">
+            <span className="text-sm text-slate-700 truncate block">{file.name}</span>
+            <span className="text-xs text-slate-400">{formatFileSize(file.size)}</span>
+          </div>
+        </div>
+        <div className="flex items-center gap-2 flex-shrink-0 ml-2">
+          <div className="flex items-center gap-1.5 text-emerald-600 font-medium text-sm">
+            {file.status === 'success' ? (
+              <CheckCircle2 className="w-4 h-4" />
+            ) : file.status === 'uploading' ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : (
+              <AlertCircle className="w-4 h-4" />
+            )}
+            {file.status === 'uploading' && file.progress != null
+              ? `${file.progress}%`
+              : file.status === 'success'
+              ? '已上传'
+              : '上传失败'}
+          </div>
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation()
+              handleRemove('idCardFront', false)(0)
+            }}
+            className="w-7 h-7 rounded-lg bg-slate-100 hover:bg-red-100 flex items-center justify-center text-slate-400 hover:text-red-500 transition-colors opacity-0 group-hover:opacity-100"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+
+  const handleFaceClick = () => {
+    faceInputRef.current?.click()
+  }
+
+  const handleFaceChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    handleFilesSelected('faceCapture', false)(e.target.files)
+    if (faceInputRef.current) {
+      faceInputRef.current.value = ''
+    }
+  }
+
+  const renderFaceCapture = () => {
+    const file = faceCaptureFiles?.[0]
+    if (file) {
+      return (
+        <div className="aspect-square flex items-center justify-center">
+          <div className="relative group cursor-pointer" onClick={handleFaceClick}>
+            <div
+              className="w-[200px] h-[200px] rounded-full overflow-hidden border-2 border-emerald-200 transition-all duration-200 group-hover:border-primary-400"
+              style={{ width: '200px', height: '200px' }}
+            >
+              {file.previewUrl ? (
+                <img
+                  src={file.previewUrl}
+                  alt={file.name}
+                  className="w-full h-full object-cover"
+                />
+              ) : (
+                <div className="w-full h-full bg-gradient-to-br from-slate-100 to-slate-200 flex items-center justify-center">
+                  <Camera className="w-12 h-12 text-slate-300" />
+                </div>
+              )}
+            </div>
+            <div className="absolute -bottom-1 left-1/2 -translate-x-1/2 bg-white border border-emerald-200 rounded-full px-3 py-1 flex items-center gap-1 shadow-sm">
+              {file.status === 'success' ? (
+                <>
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" />
+                  <span className="text-xs font-medium text-emerald-600">已采集</span>
+                </>
+              ) : file.status === 'uploading' ? (
+                <>
+                  <Loader2 className="w-3.5 h-3.5 text-primary-500 animate-spin" />
+                  <span className="text-xs font-medium text-primary-600">采集中</span>
+                </>
+              ) : (
+                <>
+                  <AlertCircle className="w-3.5 h-3.5 text-red-500" />
+                  <span className="text-xs font-medium text-red-600">采集失败</span>
+                </>
+              )}
+            </div>
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation()
+                handleRemove('faceCapture', false)(0)
+              }}
+              className="absolute -top-2 -right-2 w-7 h-7 rounded-full bg-white border border-slate-200 shadow-sm flex items-center justify-center text-slate-400 hover:text-red-500 hover:border-red-200 transition-all opacity-0 group-hover:opacity-100"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        </div>
+      )
+    }
+
+    return (
+      <div className="aspect-square flex items-center justify-center">
+        <div className="relative cursor-pointer group" onClick={handleFaceClick}>
+          <input
+            ref={faceInputRef}
+            type="file"
+            accept="image/*"
+            onChange={handleFaceChange}
+            className="hidden"
+          />
+          <div
+            className="w-[200px] h-[200px] rounded-full border-2 border-dashed border-slate-300 flex flex-col items-center justify-center gap-3 transition-all duration-200 hover:border-primary-400 hover:bg-primary-50/30"
+            style={{ width: '200px', height: '200px' }}
+          >
+            <div className="w-14 h-14 rounded-full bg-slate-100 group-hover:bg-primary-100 flex items-center justify-center transition-colors duration-200">
+              <Camera className="w-7 h-7 text-slate-400 group-hover:text-primary-500 transition-colors duration-200" />
+            </div>
+            <div className="text-center">
+              <p className="text-sm font-medium text-slate-700 group-hover:text-primary-600 transition-colors duration-200">
+                点击开始人脸采集
+              </p>
+              <p className="text-xs text-slate-400 mt-1">请保持光线充足，正对镜头</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    )
   }
 
   return (
@@ -106,7 +362,7 @@ export default function Application() {
             <div className="flex items-center gap-3 mb-1">
               <h1 className="text-2xl font-bold text-slate-900">进件录入</h1>
               <span className="px-2.5 py-1 text-xs font-medium bg-primary-50 text-primary-700 rounded-md border border-primary-100">
-                进件编号：LA20260609001
+                进件编号：{APPLICATION_ID}
               </span>
             </div>
             <p className="text-sm text-slate-500">请完整填写借款人信息并上传证件</p>
@@ -288,48 +544,17 @@ export default function Application() {
                   身份证正面<span className="text-red-500 ml-0.5">*</span>
                 </label>
               </div>
-              {uploadedFiles.idFront.uploaded ? (
-                <div className="relative rounded-2xl border-2 border-emerald-200 bg-emerald-50/50 overflow-hidden group">
-                  <div className="aspect-[1.58/1] bg-slate-100 flex items-center justify-center relative">
-                    <div className="absolute inset-0 bg-gradient-to-br from-blue-50 via-white to-red-50" />
-                    <div className="relative z-10 p-6 w-full h-full flex flex-col">
-                      <div className="flex items-start justify-between">
-                        <div>
-                          <div className="text-xs text-slate-500 mb-1">姓 名</div>
-                          <div className="text-sm font-medium text-slate-800">张 三</div>
-                        </div>
-                        <div className="w-16 h-20 bg-slate-200 rounded flex items-center justify-center text-slate-400 text-xs">
-                          头像
-                        </div>
-                      </div>
-                      <div className="mt-auto space-y-1">
-                        <div className="flex gap-4 text-xs">
-                          <span className="text-slate-500">性 别 男</span>
-                          <span className="text-slate-500">民 族 汉</span>
-                        </div>
-                        <div className="text-xs text-slate-500">出 生 1990年01月01日</div>
-                        <div className="text-xs text-slate-500">住 址 北京市朝阳区xxx</div>
-                        <div className="text-xs text-slate-500">公民身份号码 110101199001011234</div>
-                      </div>
-                    </div>
-                  </div>
-                  <div className="px-4 py-3 bg-white border-t border-emerald-100 flex items-center justify-between">
-                    <div className="flex items-center gap-2 min-w-0">
-                      <FileText className="w-4 h-4 text-emerald-500 flex-shrink-0" />
-                      <span className="text-sm text-slate-700 truncate">{uploadedFiles.idFront.name}</span>
-                    </div>
-                    <div className="flex items-center gap-1.5 text-emerald-600 font-medium text-sm flex-shrink-0 ml-2">
-                      <CheckCircle2 className="w-4 h-4" />
-                      已上传
-                    </div>
-                  </div>
-                </div>
+              {idCardFrontFiles && idCardFrontFiles.length > 0 ? (
+                renderIdCardFrontPreview(idCardFrontFiles[0])
               ) : (
                 <UploadZone
                   label="上传身份证正面"
                   accept="image/*"
                   icon={IdCard}
                   hint="支持 JPG、PNG 格式"
+                  onFilesSelected={handleFilesSelected('idCardFront', false)}
+                  onRemove={handleRemove('idCardFront', false)}
+                  uploadedFiles={idCardFrontFiles}
                 />
               )}
             </div>
@@ -346,6 +571,9 @@ export default function Application() {
                 accept="image/*"
                 icon={IdCard}
                 hint="支持 JPG、PNG 格式"
+                uploadedFiles={idCardBackFiles}
+                onFilesSelected={handleFilesSelected('idCardBack', false)}
+                onRemove={handleRemove('idCardBack', false)}
               />
             </div>
 
@@ -356,24 +584,7 @@ export default function Application() {
                   人脸识别<span className="text-red-500 ml-0.5">*</span>
                 </label>
               </div>
-              <div className="aspect-square flex items-center justify-center">
-                <div className="relative cursor-pointer group">
-                  <div
-                    className="w-[200px] h-[200px] rounded-full border-2 border-dashed border-slate-300 flex flex-col items-center justify-center gap-3 transition-all duration-200 hover:border-primary-400 hover:bg-primary-50/30"
-                    style={{ width: '200px', height: '200px' }}
-                  >
-                    <div className="w-14 h-14 rounded-full bg-slate-100 group-hover:bg-primary-100 flex items-center justify-center transition-colors duration-200">
-                      <Camera className="w-7 h-7 text-slate-400 group-hover:text-primary-500 transition-colors duration-200" />
-                    </div>
-                    <div className="text-center">
-                      <p className="text-sm font-medium text-slate-700 group-hover:text-primary-600 transition-colors duration-200">
-                        点击开始人脸采集
-                      </p>
-                      <p className="text-xs text-slate-400 mt-1">请保持光线充足，正对镜头</p>
-                    </div>
-                  </div>
-                </div>
-              </div>
+              {renderFaceCapture()}
             </div>
           </div>
 
@@ -390,6 +601,9 @@ export default function Application() {
                 accept="image/*"
                 icon={CreditCard}
                 hint="清晰展示卡号"
+                uploadedFiles={bankCardFiles}
+                onFilesSelected={handleFilesSelected('bankCard', false)}
+                onRemove={handleRemove('bankCard', false)}
               />
             </div>
             <div>
@@ -404,6 +618,9 @@ export default function Application() {
                 accept="image/*,.pdf"
                 icon={Briefcase}
                 hint="工牌/劳动合同/在职证明"
+                uploadedFiles={workProofFiles}
+                onFilesSelected={handleFilesSelected('workProof', false)}
+                onRemove={handleRemove('workProof', false)}
               />
             </div>
             <div>
@@ -419,6 +636,9 @@ export default function Application() {
                 icon={Receipt}
                 hint="近6个月银行流水"
                 multiple
+                uploadedFiles={incomeProofFiles}
+                onFilesSelected={handleFilesSelected('incomeProof', true)}
+                onRemove={handleRemove('incomeProof', true)}
               />
             </div>
           </div>

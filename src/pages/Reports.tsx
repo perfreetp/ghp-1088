@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useCallback } from 'react'
 import {
   RefreshCw,
   Download,
@@ -17,7 +17,11 @@ import {
   PieChart as PieChartIcon,
   ScatterChart as ScatterChartIcon,
   Layers,
+  Loader2,
 } from 'lucide-react'
+import * as XLSX from 'xlsx'
+import jsPDF from 'jspdf'
+import autoTable from 'jspdf-autotable'
 import {
   BarChart,
   Bar,
@@ -102,8 +106,32 @@ export default function Reports() {
   const [productFilter, setProductFilter] = useState<(typeof PRODUCT_OPTIONS)[number]>('全部产品')
   const [activeTab, setActiveTab] = useState<(typeof TABS)[number]>('渠道分析')
   const [showExportMenu, setShowExportMenu] = useState(false)
+  const [exporting, setExporting] = useState(false)
   const [dateFrom, setDateFrom] = useState('2026-06-01')
   const [dateTo, setDateTo] = useState('2026-06-09')
+
+  const getDateStamp = useCallback(() => {
+    const now = new Date()
+    const pad = (n: number) => String(n).padStart(2, '0')
+    const YYYYMMDD = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}`
+    const HHmm = `${pad(now.getHours())}${pad(now.getMinutes())}`
+    return { YYYYMMDD, HHmm }
+  }, [])
+
+  const getFilterSummary = useCallback(() => {
+    const parts: string[] = []
+    parts.push(`时间：${timeRange}${timeRange === '自定义' ? `(${dateFrom} ~ ${dateTo})` : ''}`)
+    parts.push(`渠道：${channelFilter}`)
+    parts.push(`城市：${cityFilter}`)
+    parts.push(`产品：${productFilter}`)
+    return parts.join(' | ')
+  }, [timeRange, channelFilter, cityFilter, productFilter, dateFrom, dateTo])
+
+  const handleCustomExport = useCallback(() => {
+    setShowExportMenu(false)
+    console.log('自定义报表模板 - 功能开发中')
+    alert('功能开发中')
+  }, [])
 
   const totalApplyCount = useMemo(
     () => channelStats.reduce((s, c) => s + c.applyCount, 0),
@@ -429,6 +457,457 @@ export default function Reports() {
     },
   ]
 
+  const handleExportExcel = useCallback(async () => {
+    setExporting(true)
+    setShowExportMenu(false)
+    try {
+      await new Promise((r) => setTimeout(r, 200))
+      const { YYYYMMDD, HHmm } = getDateStamp()
+
+      const wb = XLSX.utils.book_new()
+
+      const channelHeader = [
+        '渠道名称', '申请量', '占比', '通过量', '通过率', '拒绝量',
+        '放款金额', '平均金额', '平均利率', '逾期率', 'A级', 'B级', 'C级', 'D级', 'E级'
+      ]
+      const channelRows = channelTableData.map((r) => [
+        r.channel,
+        r.applyCount,
+        pct(r.applyRatio, 2),
+        r.approveCount,
+        pct(r.approveRate, 2),
+        r.rejectCount,
+        formatMoney(r.approveAmount),
+        formatMoney(r.avgApproveAmount),
+        pct(r.avgRate, 2),
+        pct(r.overdueRate, 2),
+        r.levelA,
+        r.levelB,
+        r.levelC,
+        r.levelD,
+        r.levelE,
+      ])
+      const channelTotal = [
+        '合计',
+        channelTableTotals.applyCount,
+        '100.00%',
+        channelTableTotals.approveCount,
+        pct(reportSummary.totalApproveRate, 2),
+        channelTableTotals.rejectCount,
+        formatMoney(channelTableTotals.approveAmount),
+        formatMoney(channelTableTotals.approveAmount / channelTableTotals.approveCount),
+        '17.80%',
+        '6.82%',
+        channelTableTotals.levelA,
+        channelTableTotals.levelB,
+        channelTableTotals.levelC,
+        channelTableTotals.levelD,
+        channelTableTotals.levelE,
+      ]
+      const wsChannel = XLSX.utils.aoa_to_sheet([channelHeader, ...channelRows, channelTotal])
+      wsChannel['!cols'] = [
+        { wch: 14 }, { wch: 10 }, { wch: 9 }, { wch: 10 }, { wch: 9 }, { wch: 10 },
+        { wch: 14 }, { wch: 14 }, { wch: 10 }, { wch: 9 },
+        { wch: 7 }, { wch: 7 }, { wch: 7 }, { wch: 7 }, { wch: 7 },
+      ]
+      const channelRange = XLSX.utils.decode_range(wsChannel['!ref'] || 'A1')
+      for (let C = channelRange.s.c; C <= channelRange.e.c; ++C) {
+        const cell = wsChannel[XLSX.utils.encode_cell({ r: 0, c: C })]
+        if (cell) {
+          cell.s = {
+            font: { bold: true },
+            fill: { fgColor: { rgb: 'FFE2E8F0' } },
+            alignment: { horizontal: 'center', vertical: 'center' },
+          }
+        }
+      }
+      XLSX.utils.book_append_sheet(wb, wsChannel, '渠道分析')
+
+      const cityHeader = [
+        '城市', '申请数', '通过率', '放款总额', '笔均金额', 'A级占比', 'D+E级占比', '逾期率'
+      ]
+      const cityRows = cityTableData.map((c) => {
+        const avgAmt = c.approveCount > 0 ? c.approveAmount / c.approveCount : 0
+        let overdueRate = 5 + Math.random() * 1.5
+        if (c.city === '重庆') overdueRate = 8.5
+        else if (c.city === '西安') overdueRate = 7.2
+        else if (c.city === '深圳') overdueRate = 6.8
+        else if (c.city === '成都') overdueRate = 6.5
+        return [
+          c.city,
+          c.applyCount,
+          pct(c.approveRate, 2),
+          formatMoney(c.approveAmount),
+          formatMoney(avgAmt),
+          pct(c.aRatio, 2),
+          pct(c.deRatio, 2),
+          pct(overdueRate, 2),
+        ]
+      })
+      const cityTotals = cityTableData.reduce(
+        (acc, r) => {
+          acc.applyCount += r.applyCount
+          acc.approveAmount += r.approveAmount
+          acc.riskA += r.riskLevelA
+          acc.riskDE += r.riskLevelD + r.riskLevelE
+          acc.total += r.riskLevelA + r.riskLevelB + r.riskLevelC + r.riskLevelD + r.riskLevelE
+          return acc
+        },
+        { applyCount: 0, approveAmount: 0, riskA: 0, riskDE: 0, total: 0 }
+      )
+      const cityTotal = [
+        '合计',
+        cityTotals.applyCount,
+        pct(reportSummary.totalApproveRate, 2),
+        formatMoney(cityTotals.approveAmount),
+        formatMoney(reportSummary.totalApproveAmount / reportSummary.totalApproveCount),
+        pct(cityTotals.total > 0 ? (cityTotals.riskA / cityTotals.total) * 100 : 0, 2),
+        pct(cityTotals.total > 0 ? (cityTotals.riskDE / cityTotals.total) * 100 : 0, 2),
+        '6.82%',
+      ]
+      const wsCity = XLSX.utils.aoa_to_sheet([cityHeader, ...cityRows, cityTotal])
+      wsCity['!cols'] = [
+        { wch: 10 }, { wch: 10 }, { wch: 9 }, { wch: 14 }, { wch: 14 },
+        { wch: 10 }, { wch: 11 }, { wch: 9 },
+      ]
+      const cityRange = XLSX.utils.decode_range(wsCity['!ref'] || 'A1')
+      for (let C = cityRange.s.c; C <= cityRange.e.c; ++C) {
+        const cell = wsCity[XLSX.utils.encode_cell({ r: 0, c: C })]
+        if (cell) {
+          cell.s = {
+            font: { bold: true },
+            fill: { fgColor: { rgb: 'FFE2E8F0' } },
+            alignment: { horizontal: 'center', vertical: 'center' },
+          }
+        }
+      }
+      XLSX.utils.book_append_sheet(wb, wsCity, '城市分析')
+
+      const productHeader = [
+        '产品名称', '申请笔数', '放款总额', '平均期限', '平均利率', '笔均金额', '逾期金额', '逾期率', '预估收益率'
+      ]
+      const productRows = productStats.map((p) => {
+        const avgAmt = p.approveCount > 0 ? p.approveAmount / p.approveCount : 0
+        const overdueAmt = (p.approveAmount * p.overdueRate) / 100
+        const expectedReturn = p.avgRate - p.overdueRate * 0.4
+        return [
+          p.product,
+          p.approveCount,
+          formatMoney(p.approveAmount),
+          `${p.avgTerm}期`,
+          pct(p.avgRate, 2),
+          formatMoney(avgAmt),
+          formatMoney(overdueAmt),
+          pct(p.overdueRate, 2),
+          pct(expectedReturn, 2),
+        ]
+      })
+      const productTotals = productStats.reduce(
+        (acc, p) => {
+          acc.count += p.approveCount
+          acc.amount += p.approveAmount
+          acc.term += p.avgTerm * p.approveCount
+          acc.rateSum += p.avgRate * p.approveAmount
+          acc.overdueAmt += (p.approveAmount * p.overdueRate) / 100
+          return acc
+        },
+        { count: 0, amount: 0, term: 0, rateSum: 0, overdueAmt: 0 }
+      )
+      const productTotal = [
+        '合计',
+        productTotals.count,
+        formatMoney(productTotals.amount),
+        `${Math.round(productTotals.term / productTotals.count)}期`,
+        pct(productTotals.amount > 0 ? productTotals.rateSum / productTotals.amount : 0, 2),
+        formatMoney(productTotals.amount / productTotals.count),
+        formatMoney(productTotals.overdueAmt),
+        pct(productTotals.amount > 0 ? (productTotals.overdueAmt / productTotals.amount) * 100 : 0, 2),
+        pct(reportSummary.totalApproveRate, 2),
+      ]
+      const wsProduct = XLSX.utils.aoa_to_sheet([productHeader, ...productRows, productTotal])
+      wsProduct['!cols'] = [
+        { wch: 12 }, { wch: 10 }, { wch: 14 }, { wch: 10 }, { wch: 10 },
+        { wch: 14 }, { wch: 14 }, { wch: 9 }, { wch: 11 },
+      ]
+      const productRange = XLSX.utils.decode_range(wsProduct['!ref'] || 'A1')
+      for (let C = productRange.s.c; C <= productRange.e.c; ++C) {
+        const cell = wsProduct[XLSX.utils.encode_cell({ r: 0, c: C })]
+        if (cell) {
+          cell.s = {
+            font: { bold: true },
+            fill: { fgColor: { rgb: 'FFE2E8F0' } },
+            alignment: { horizontal: 'center', vertical: 'center' },
+          }
+        }
+      }
+      XLSX.utils.book_append_sheet(wb, wsProduct, '产品分析')
+
+      const filename = `风控分析报告_${YYYYMMDD}_${HHmm}.xlsx`
+      XLSX.writeFile(wb, filename)
+    } finally {
+      setExporting(false)
+    }
+  }, [getDateStamp, channelTableData, channelTableTotals, cityTableData, productStats])
+
+  const handleExportPDF = useCallback(async () => {
+    setExporting(true)
+    setShowExportMenu(false)
+    try {
+      await new Promise((r) => setTimeout(r, 300))
+      const { YYYYMMDD, HHmm } = getDateStamp()
+
+      const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' })
+      const pageWidth = doc.internal.pageSize.getWidth()
+      const pageHeight = doc.internal.pageSize.getHeight()
+
+      const addHeaderFooter = (pageNum: number, totalPages: number) => {
+        doc.setFillColor(30, 64, 175)
+        doc.rect(0, 0, pageWidth, 8, 'F')
+        doc.setFontSize(8)
+        doc.setTextColor(255, 255, 255)
+        doc.text('小额贷款风控审核台', 8, 5.5)
+        doc.text(`机密 · 内部使用`, pageWidth - 35, 5.5, { align: 'right' })
+
+        doc.setDrawColor(226, 232, 240)
+        doc.setLineWidth(0.2)
+        doc.line(8, pageHeight - 14, pageWidth - 8, pageHeight - 14)
+        doc.setFontSize(8)
+        doc.setTextColor(100, 116, 139)
+        doc.text('小额贷款风控审核台 © 2026 内部资料 · 请勿外传', pageWidth / 2, pageHeight - 9, { align: 'center' })
+        doc.text(`Page ${pageNum} of ${totalPages}`, pageWidth - 15, pageHeight - 9, { align: 'right' })
+      }
+
+      doc.setFillColor(30, 58, 138)
+      doc.rect(0, 8, pageWidth, 32, 'F')
+      doc.setFontSize(22)
+      doc.setTextColor(255, 255, 255)
+      doc.setFont(undefined, 'bold')
+      doc.text('小额贷款风险分析报告', pageWidth / 2, 22, { align: 'center' })
+      doc.setFontSize(10)
+      doc.setTextColor(219, 234, 254)
+      doc.setFont(undefined, 'normal')
+      doc.text(getFilterSummary(), pageWidth / 2, 30, { align: 'center' })
+      const nowStr = new Date().toLocaleString('zh-CN')
+      doc.text(`生成时间：${nowStr}`, pageWidth / 2, 36, { align: 'center' })
+
+      const kpiData = [
+        { label: '总申请量', value: reportSummary.totalApplyCount.toLocaleString() + '笔', color: [59, 130, 246] },
+        { label: '通过量', value: reportSummary.totalApproveCount.toLocaleString() + '笔', color: [16, 185, 129] },
+        { label: '放款额', value: formatWan(reportSummary.totalApproveAmount), color: [20, 184, 166] },
+        { label: '平均利率', value: '17.8%', color: [139, 92, 246] },
+        { label: '逾期率', value: '6.82%', color: [249, 115, 22] },
+      ]
+      const kpiY = 48
+      const kpiW = (pageWidth - 16 - 4 * 4) / 5
+      const kpiH = 22
+      kpiData.forEach((kpi, i) => {
+        const x = 8 + i * (kpiW + 4)
+        doc.setDrawColor(kpi.color[0], kpi.color[1], kpi.color[2])
+        doc.setFillColor(kpi.color[0] + 200, kpi.color[1] + 200, kpi.color[2] + 200)
+        doc.roundedRect(x, kpiY, kpiW, kpiH, 2, 2, 'FD')
+        doc.setFontSize(9)
+        doc.setTextColor(71, 85, 105)
+        doc.text(kpi.label, x + kpiW / 2, kpiY + 8, { align: 'center' })
+        doc.setFontSize(12)
+        doc.setTextColor(kpi.color[0], kpi.color[1], kpi.color[2])
+        doc.setFont(undefined, 'bold')
+        doc.text(kpi.value, x + kpiW / 2, kpiY + 17, { align: 'center' })
+        doc.setFont(undefined, 'normal')
+      })
+
+      const channelBody: (string | number)[][] = channelTableData.map((r) => [
+        r.channel,
+        r.applyCount.toLocaleString(),
+        pct(r.applyRatio, 2),
+        r.approveCount.toLocaleString(),
+        pct(r.approveRate, 2),
+        r.rejectCount.toLocaleString(),
+        formatWan(r.approveAmount),
+        formatWan(r.avgApproveAmount),
+        pct(r.avgRate, 2),
+        pct(r.overdueRate, 2),
+        r.levelA, r.levelB, r.levelC, r.levelD, r.levelE,
+      ])
+      channelBody.push([
+        '合计',
+        channelTableTotals.applyCount.toLocaleString(),
+        '100.00%',
+        channelTableTotals.approveCount.toLocaleString(),
+        pct(reportSummary.totalApproveRate, 2),
+        channelTableTotals.rejectCount.toLocaleString(),
+        formatWan(channelTableTotals.approveAmount),
+        formatWan(channelTableTotals.approveAmount / channelTableTotals.approveCount),
+        '17.80%',
+        '6.82%',
+        channelTableTotals.levelA,
+        channelTableTotals.levelB,
+        channelTableTotals.levelC,
+        channelTableTotals.levelD,
+        channelTableTotals.levelE,
+      ])
+
+      autoTable(doc, {
+        startY: 76,
+        head: [['渠道风险分析']],
+        headStyles: { fillColor: [30, 58, 138], fontSize: 11, textColor: 255, halign: 'center' },
+        body: [],
+        margin: { left: 8, right: 8 },
+        tableWidth: 'wrap',
+      })
+
+      autoTable(doc, {
+        startY: (doc as any).lastAutoTable.finalY + 2,
+        head: [[
+          '渠道名称', '申请量', '占比', '通过量', '通过率', '拒绝量',
+          '放款金额', '平均金额', '平均利率', '逾期率', 'A级', 'B级', 'C级', 'D级', 'E级'
+        ]],
+        body: channelBody,
+        styles: { fontSize: 7.5, cellPadding: 2, halign: 'center', valign: 'middle' },
+        headStyles: { fillColor: [226, 232, 240], textColor: [30, 41, 59], fontSize: 8, fontStyle: 'bold' },
+        columnStyles: {
+          0: { halign: 'left', cellWidth: 22 },
+          1: { cellWidth: 16 }, 2: { cellWidth: 14 }, 3: { cellWidth: 16 }, 4: { cellWidth: 14 }, 5: { cellWidth: 16 },
+          6: { cellWidth: 22 }, 7: { cellWidth: 22 }, 8: { cellWidth: 16 }, 9: { cellWidth: 14 },
+          10: { cellWidth: 10 }, 11: { cellWidth: 10 }, 12: { cellWidth: 10 }, 13: { cellWidth: 10 }, 14: { cellWidth: 10 },
+        },
+        didParseCell: (data) => {
+          if (data.section === 'body' && data.row.index === channelBody.length - 1) {
+            data.cell.styles.fillColor = [219, 234, 254]
+            data.cell.styles.fontStyle = 'bold'
+          }
+        },
+        margin: { left: 8, right: 8 },
+      })
+
+      const top10Cities = [...cityTableData]
+        .sort((a, b) => b.applyCount - a.applyCount)
+        .slice(0, 10)
+      const cityBody: (string | number)[][] = top10Cities.map((c) => {
+        const avgAmt = c.approveCount > 0 ? c.approveAmount / c.approveCount : 0
+        let overdueRate = 5 + Math.random() * 1.5
+        if (c.city === '重庆') overdueRate = 8.5
+        else if (c.city === '西安') overdueRate = 7.2
+        else if (c.city === '深圳') overdueRate = 6.8
+        else if (c.city === '成都') overdueRate = 6.5
+        return [
+          c.city,
+          c.applyCount.toLocaleString(),
+          pct(c.approveRate, 2),
+          formatWan(c.approveAmount),
+          formatWan(avgAmt),
+          pct(c.aRatio, 2),
+          pct(c.deRatio, 2),
+          pct(overdueRate, 2),
+        ]
+      })
+
+      autoTable(doc, {
+        startY: (doc as any).lastAutoTable.finalY + 6,
+        head: [['Top10城市风险分析']],
+        headStyles: { fillColor: [30, 58, 138], fontSize: 11, textColor: 255, halign: 'center' },
+        body: [],
+        margin: { left: 8, right: 8 },
+        tableWidth: 'wrap',
+      })
+
+      autoTable(doc, {
+        startY: (doc as any).lastAutoTable.finalY + 2,
+        head: [['城市', '申请数', '通过率', '放款总额', '笔均金额', 'A级占比', 'D+E级占比', '逾期率']],
+        body: cityBody,
+        styles: { fontSize: 8, cellPadding: 2.5, halign: 'center', valign: 'middle' },
+        headStyles: { fillColor: [226, 232, 240], textColor: [30, 41, 59], fontSize: 8.5, fontStyle: 'bold' },
+        columnStyles: {
+          0: { halign: 'left', cellWidth: 28 },
+          1: { cellWidth: 22 }, 2: { cellWidth: 20 }, 3: { cellWidth: 32 }, 4: { cellWidth: 32 },
+          5: { cellWidth: 22 }, 6: { cellWidth: 24 }, 7: { cellWidth: 20 },
+        },
+        margin: { left: 8, right: 8 },
+      })
+
+      const productBody: (string | number)[][] = productStats.map((p) => {
+        const avgAmt = p.approveCount > 0 ? p.approveAmount / p.approveCount : 0
+        const overdueAmt = (p.approveAmount * p.overdueRate) / 100
+        const expectedReturn = p.avgRate - p.overdueRate * 0.4
+        return [
+          p.product,
+          p.approveCount.toLocaleString(),
+          formatWan(p.approveAmount),
+          `${p.avgTerm}期`,
+          pct(p.avgRate, 2),
+          formatWan(avgAmt),
+          formatWan(overdueAmt),
+          pct(p.overdueRate, 2),
+          pct(expectedReturn, 2),
+        ]
+      })
+      const prodT = productStats.reduce(
+        (acc, p) => {
+          acc.c += p.approveCount
+          acc.a += p.approveAmount
+          acc.t += p.avgTerm * p.approveCount
+          acc.r += p.avgRate * p.approveAmount
+          acc.o += (p.approveAmount * p.overdueRate) / 100
+          return acc
+        },
+        { c: 0, a: 0, t: 0, r: 0, o: 0 }
+      )
+      productBody.push([
+        '合计',
+        prodT.c.toLocaleString(),
+        formatWan(prodT.a),
+        `${Math.round(prodT.t / prodT.c)}期`,
+        pct(prodT.a > 0 ? prodT.r / prodT.a : 0, 2),
+        formatWan(prodT.a / prodT.c),
+        formatWan(prodT.o),
+        pct(prodT.a > 0 ? (prodT.o / prodT.a) * 100 : 0, 2),
+        pct(17.8 - 6.82 * 0.4, 2),
+      ])
+
+      autoTable(doc, {
+        startY: (doc as any).lastAutoTable.finalY + 6,
+        head: [['产品风险分析']],
+        headStyles: { fillColor: [30, 58, 138], fontSize: 11, textColor: 255, halign: 'center' },
+        body: [],
+        margin: { left: 8, right: 8 },
+        tableWidth: 'wrap',
+      })
+
+      autoTable(doc, {
+        startY: (doc as any).lastAutoTable.finalY + 2,
+        head: [[
+          '产品名称', '申请笔数', '放款总额', '平均期限', '平均利率',
+          '笔均金额', '逾期金额', '逾期率', '预估收益率'
+        ]],
+        body: productBody,
+        styles: { fontSize: 7.5, cellPadding: 2, halign: 'center', valign: 'middle' },
+        headStyles: { fillColor: [226, 232, 240], textColor: [30, 41, 59], fontSize: 8, fontStyle: 'bold' },
+        columnStyles: {
+          0: { halign: 'left', cellWidth: 24 },
+          1: { cellWidth: 18 }, 2: { cellWidth: 26 }, 3: { cellWidth: 18 }, 4: { cellWidth: 18 },
+          5: { cellWidth: 26 }, 6: { cellWidth: 26 }, 7: { cellWidth: 16 }, 8: { cellWidth: 20 },
+        },
+        didParseCell: (data) => {
+          if (data.section === 'body' && data.row.index === productBody.length - 1) {
+            data.cell.styles.fillColor = [219, 234, 254]
+            data.cell.styles.fontStyle = 'bold'
+          }
+        },
+        margin: { left: 8, right: 8 },
+      })
+
+      const totalPages = (doc as any).internal.getNumberOfPages()
+      for (let i = 1; i <= totalPages; i++) {
+        doc.setPage(i)
+        addHeaderFooter(i, totalPages)
+      }
+
+      const filename = `风控分析报告_${YYYYMMDD}_${HHmm}.pdf`
+      doc.save(filename)
+    } finally {
+      setExporting(false)
+    }
+  }, [getDateStamp, getFilterSummary, channelTableData, channelTableTotals, cityTableData, productStats])
+
   return (
     <div className="page-fade-enter space-y-6">
       {/* 页面头部 */}
@@ -446,27 +925,46 @@ export default function Reports() {
               </button>
               <div className="relative">
                 <button
-                  onClick={() => setShowExportMenu(!showExportMenu)}
-                  className="inline-flex h-10 items-center gap-2 rounded-lg bg-primary-600 px-4 text-sm font-medium text-white shadow-sm hover:bg-primary-700 transition-colors"
+                  onClick={() => !exporting && setShowExportMenu(!showExportMenu)}
+                  disabled={exporting}
+                  className={cn(
+                    'inline-flex h-10 items-center gap-2 rounded-lg bg-primary-600 px-4 text-sm font-medium text-white shadow-sm transition-colors',
+                    exporting ? 'cursor-not-allowed opacity-80' : 'hover:bg-primary-700'
+                  )}
                 >
-                  <Download className="h-4 w-4" />
-                  导出
-                  <ChevronDown className={cn('h-4 w-4 transition-transform', showExportMenu && 'rotate-180')} />
+                  {exporting ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Download className="h-4 w-4" />
+                  )}
+                  {exporting ? '生成中...' : '导出'}
+                  {!exporting && (
+                    <ChevronDown className={cn('h-4 w-4 transition-transform', showExportMenu && 'rotate-180')} />
+                  )}
                 </button>
-                {showExportMenu && (
-                  <div className="absolute right-0 top-12 z-20 w-48 rounded-xl border border-slate-200 bg-white py-2 shadow-xl">
-                    <button className="flex w-full items-center gap-2.5 px-4 py-2.5 text-sm text-slate-700 hover:bg-slate-50">
+                {showExportMenu && !exporting && (
+                  <div className="absolute right-0 top-12 z-20 w-56 rounded-xl border border-slate-200 bg-white py-2 shadow-xl">
+                    <button
+                      onClick={handleExportExcel}
+                      className="flex w-full items-center gap-2.5 px-4 py-2.5 text-sm text-slate-700 hover:bg-slate-50"
+                    >
                       <FileSpreadsheet className="h-4 w-4 text-emerald-600" />
-                      导出Excel
+                      📊 导出 Excel (.xlsx)
                     </button>
-                    <button className="flex w-full items-center gap-2.5 px-4 py-2.5 text-sm text-slate-700 hover:bg-slate-50">
+                    <button
+                      onClick={handleExportPDF}
+                      className="flex w-full items-center gap-2.5 px-4 py-2.5 text-sm text-slate-700 hover:bg-slate-50"
+                    >
                       <FileText className="h-4 w-4 text-red-500" />
-                      导出PDF
+                      📄 导出 PDF (.pdf)
                     </button>
                     <div className="my-1 border-t border-slate-100" />
-                    <button className="flex w-full items-center gap-2.5 px-4 py-2.5 text-sm text-slate-700 hover:bg-slate-50">
+                    <button
+                      onClick={handleCustomExport}
+                      className="flex w-full items-center gap-2.5 px-4 py-2.5 text-sm text-slate-700 hover:bg-slate-50"
+                    >
                       <Settings2 className="h-4 w-4 text-slate-500" />
-                      自定义报表
+                      ⚙️ 自定义报表模板
                     </button>
                   </div>
                 )}

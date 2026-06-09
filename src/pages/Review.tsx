@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import {
   Check,
   X,
@@ -32,6 +32,8 @@ import {
   formatPhone,
   formatIdCard,
 } from '@/utils/format'
+import { useAppStore, getApplicationStatusLabel } from '@/store/useAppStore'
+import type { LoanApplication, AuditTrail } from '@/types'
 
 interface ApplicationItem {
   id: string
@@ -62,6 +64,12 @@ interface CommentItem {
   decision?: string
 }
 
+interface ToastState {
+  visible: boolean
+  type: 'success' | 'error'
+  message: string
+}
+
 const mockApplications: ApplicationItem[] = [
   { id: '1', name: '张三', avatar: '张', amount: 80000, term: 12, riskLevel: 'C', status: 'reviewing', applyTime: '2026-06-09 09:15' },
   { id: '2', name: '李四', avatar: '李', amount: 120000, term: 24, riskLevel: 'B', status: 'pending', applyTime: '2026-06-09 10:20' },
@@ -84,7 +92,7 @@ const mockComments: CommentItem[] = [
   { id: 'c3', author: '李审核', role: '复核员', time: '2026-06-09 11:30', content: '申请人负债收入比为45%，略高于阈值，但考虑到其稳定的工作单位和良好的历史还款记录，建议有条件通过。', type: 'decision', decision: '建议通过' },
 ]
 
-const auditTimeline: TimelineItem[] = [
+const baseAuditTimeline: TimelineItem[] = [
   { title: '提交申请', time: '2026-06-09 09:15', operator: '借款人 张三', status: 'done' },
   { title: '系统核验', time: '2026-06-09 09:16', operator: '系统', status: 'done' },
   { title: '风险评分', time: '2026-06-09 09:17', operator: 'AI模型', description: '（675分）', status: 'done' },
@@ -104,6 +112,113 @@ const riskLevelOptions = ['全部', 'A级', 'B级', 'C级', 'D级', 'E级']
 const statusOptions = ['全部', '待审核', '审核中', '已通过', '已拒绝']
 const termOptions = [3, 6, 12, 18, 24, 36, 48, 60]
 
+const Toast = ({ toast }: { toast: ToastState }) => {
+  useEffect(() => {}, [toast.visible])
+
+  if (!toast.visible) return null
+
+  const bgColor = toast.type === 'success'
+    ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+    : 'bg-red-50 border-red-200 text-red-800'
+  const iconColor = toast.type === 'success' ? 'text-emerald-500' : 'text-red-500'
+  const Icon = toast.type === 'success' ? Check : AlertTriangle
+
+  return (
+    <div
+      className={cn(
+        'fixed top-20 right-6 z-50 animate-fade-in',
+        'flex items-center gap-3 px-5 py-4 rounded-xl border shadow-lg',
+        bgColor
+      )}
+      style={{
+        animation: 'fadeIn 0.3s ease-out',
+      }}
+    >
+      <div className={cn('flex-shrink-0', iconColor)}>
+        <Icon className="w-5 h-5" />
+      </div>
+      <span className="text-sm font-semibold">{toast.message}</span>
+    </div>
+  )
+}
+
+function convertStoreAppToItem(app: any): ApplicationItem {
+  const name = app.applicantName || app.name || '未知'
+  return {
+    id: app.id,
+    name,
+    avatar: getInitials(name),
+    amount: app.applyAmount ?? app.amount ?? 0,
+    term: app.applyTerm ?? app.term ?? 12,
+    riskLevel: app.riskLevel || 'C',
+    status: app.status || 'pending',
+    applyTime: app.applyTime || app.createdAt || '2026-06-09 09:00',
+  }
+}
+
+function normalizeStatus(status: string): string {
+  const statusMap: Record<string, string> = {
+    pending: 'pending',
+    verifying: 'verifying',
+    scoring: 'scoring',
+    reviewing: 'reviewing',
+    approved: 'approved',
+    rejected: 'rejected',
+    disbursing: 'disbursing',
+    disbursed: 'disbursed',
+    completed: 'completed',
+    '待审核': 'pending',
+    '审核中': 'reviewing',
+    '核验中': 'verifying',
+    '评分中': 'scoring',
+    '通过': 'approved',
+    '已通过': 'approved',
+    '拒绝': 'rejected',
+    '已拒绝': 'rejected',
+    '放款中': 'disbursing',
+    '已放款': 'disbursed',
+    '还款中': 'completed',
+    '已结清': 'completed',
+  }
+  return statusMap[status] || status
+}
+
+function formatAuditTrailTime(isoStr: string): string {
+  try {
+    const d = new Date(isoStr)
+    const y = d.getFullYear()
+    const m = String(d.getMonth() + 1).padStart(2, '0')
+    const day = String(d.getDate()).padStart(2, '0')
+    const h = String(d.getHours()).padStart(2, '0')
+    const min = String(d.getMinutes()).padStart(2, '0')
+    return `${y}-${m}-${day} ${h}:${min}`
+  } catch {
+    return isoStr
+  }
+}
+
+function auditTrailToTimelineItem(trail: AuditTrail, isLast: boolean): TimelineItem {
+  const normStatus = normalizeStatus(trail.status as string)
+  const statusPriority: Record<string, number> = {
+    pending: 0, verifying: 1, scoring: 2, reviewing: 3, approved: 4,
+    rejected: 4, disbursing: 4, disbursed: 5, completed: 5,
+  }
+  const pri = statusPriority[normStatus] ?? 0
+
+  let itemStatus: 'done' | 'current' | 'pending'
+  if (pri >= 4) itemStatus = 'done'
+  else if (pri >= 2) itemStatus = isLast ? 'current' : 'done'
+  else itemStatus = isLast ? 'current' : 'pending'
+
+  return {
+    title: trail.node,
+    time: formatAuditTrailTime((trail as any).operatedAt || (trail as any).timestamp || new Date().toISOString()),
+    operator: trail.operator,
+    description: trail.remark,
+    status: itemStatus,
+  }
+}
+
 export default function Review() {
   const [activeTab, setActiveTab] = useState('mine')
   const [reviewMode, setReviewMode] = useState<'single' | 'joint'>('single')
@@ -116,15 +231,198 @@ export default function Review() {
   const [approveAmount, setApproveAmount] = useState('80,000')
   const [approveTerm, setApproveTerm] = useState(12)
   const [approveRate, setApproveRate] = useState('18.5')
+  const [saveSuccess, setSaveSuccess] = useState(false)
+  const [toast, setToast] = useState<ToastState>({ visible: false, type: 'success', message: '' })
 
-  const selectedApp = mockApplications.find((a) => a.id === selectedAppId) || mockApplications[0]
+  const storeApplications = useAppStore((s) => s.applications)
+  const storeAnnotations = useAppStore((s) => s.annotations)
+  const storeAuditTrails = useAppStore((s) => s.auditTrails)
+  const addAnnotation = useAppStore((s) => s.addAnnotation)
+  const addDecisionRecord = useAppStore((s) => s.addDecisionRecord)
+  const appendAuditTrail = useAppStore((s) => s.appendAuditTrail)
+  const updateApplicationStatus = useAppStore((s) => s.updateApplicationStatus)
 
-  const filteredApplications = mockApplications.filter((app) => {
+  const showToast = (type: 'success' | 'error', message: string) => {
+    setToast({ visible: true, type, message })
+    setTimeout(() => {
+      setToast((prev) => ({ ...prev, visible: false }))
+    }, 3000)
+  }
+
+  const mergedApplications: ApplicationItem[] = useMemo(() => {
+    const byId = new Map<string, ApplicationItem>()
+    mockApplications.forEach((app) => byId.set(app.id, { ...app }))
+
+    storeApplications.forEach((storeApp) => {
+      const converted = convertStoreAppToItem(storeApp)
+      if (byId.has(storeApp.id)) {
+        const existing = byId.get(storeApp.id)!
+        byId.set(storeApp.id, {
+          ...existing,
+          ...converted,
+          status: normalizeStatus(storeApp.status as string),
+        })
+      } else {
+        byId.set(storeApp.id, {
+          ...converted,
+          status: normalizeStatus(storeApp.status as string),
+        })
+      }
+    })
+
+    return Array.from(byId.values())
+  }, [storeApplications])
+
+  useEffect(() => {
+    if (mergedApplications.length > 0 && !mergedApplications.find((a) => a.id === selectedAppId)) {
+      setSelectedAppId(mergedApplications[0].id)
+    }
+  }, [mergedApplications, selectedAppId])
+
+  const selectedApp = mergedApplications.find((a) => a.id === selectedAppId) || mergedApplications[0]
+
+  const filteredApplications = mergedApplications.filter((app) => {
     const matchesSearch = app.name.includes(searchQuery) || app.id.includes(searchQuery)
     const matchesRisk = riskFilter === '全部' || app.riskLevel === riskFilter.charAt(0)
     const matchesStatus = statusFilter === '全部'
     return matchesSearch && matchesRisk && matchesStatus
   })
+
+  const mergedComments: CommentItem[] = useMemo(() => {
+    const storeComments = storeAnnotations
+      .filter((a) => a.applicationId === selectedAppId)
+      .map((a) => ({
+        id: a.id,
+        author: a.author,
+        role: a.authorRole,
+        time: formatAuditTrailTime(a.createdAt),
+        content: a.content,
+        type: 'comment' as const,
+      }))
+    return [...storeComments, ...mockComments]
+  }, [storeAnnotations, selectedAppId])
+
+  const mergedTimeline: TimelineItem[] = useMemo(() => {
+    const appTrails = (storeAuditTrails[selectedAppId] as any[]) || []
+    const trailItems: TimelineItem[] = appTrails.map((t, i) =>
+      auditTrailToTimelineItem(
+        {
+          node: t.node || t.title || '',
+          operator: t.operator || '',
+          operatedAt: t.operatedAt || t.timestamp || t.time || new Date().toISOString(),
+          remark: t.remark || t.description || '',
+          status: (t.status || 'pending') as any,
+        },
+        i === appTrails.length - 1
+      )
+    )
+
+    if (trailItems.length === 0) return baseAuditTimeline
+
+    const newItems = [...baseAuditTimeline]
+    const lastBaseIdx = newItems.length - 1
+    for (let i = 0; i < newItems.length; i++) {
+      if (i < lastBaseIdx) newItems[i] = { ...newItems[i], status: 'done' }
+      else if (i === lastBaseIdx) newItems[i] = { ...newItems[i], status: 'done' }
+    }
+    return [...newItems, ...trailItems]
+  }, [storeAuditTrails, selectedAppId])
+
+  useEffect(() => {
+    if (saveSuccess) {
+      const timer = setTimeout(() => setSaveSuccess(false), 3000)
+      return () => clearTimeout(timer)
+    }
+  }, [saveSuccess])
+
+  const handleDecision = (decision: 'approve' | 'reject' | 'supplement' | 'review' | 'disburse') => {
+    if (!selectedApp) return
+
+    const applicationId = selectedApp.id
+    const operator = decision === 'review' ? '张主管' : '李审核员'
+    const operatorRole = decision === 'review' ? '风控主管' : '高级审核员'
+
+    let nodeTitle = ''
+    let trailStatus = 'done'
+    switch (decision) {
+      case 'approve':
+        nodeTitle = '审核通过'
+        break
+      case 'reject':
+        nodeTitle = '申请拒绝'
+        break
+      case 'supplement':
+        nodeTitle = '退回补件'
+        trailStatus = 'pending'
+        break
+      case 'review':
+        nodeTitle = '提交主管复审'
+        break
+      case 'disburse':
+        nodeTitle = '确认放款'
+        break
+    }
+
+    try {
+      addDecisionRecord({
+        applicationId,
+        decision,
+        operator,
+        operatorRole,
+        remark: reviewContent,
+      } as any)
+    } catch (e) {
+      const STATUS_MAP: Record<string, string> = {
+        approve: 'approved', reject: 'rejected', supplement: 'pending',
+        review: 'reviewing', disburse: 'disbursed',
+      }
+      updateApplicationStatus(applicationId, STATUS_MAP[decision] as any)
+    }
+
+    try {
+      appendAuditTrail(applicationId, {
+        node: nodeTitle,
+        operator,
+        operatedAt: new Date().toISOString(),
+        remark: reviewContent || nodeTitle,
+        status: trailStatus as any,
+      })
+    } catch (e) {
+      // ignore
+    }
+
+    const successMessages: Record<string, string> = {
+      approve: '✓ 审批通过，申请状态已更新',
+      reject: '✗ 申请已拒绝',
+      supplement: '↻ 已退回补件',
+      review: '↑ 已提交主管复审',
+      disburse: '¥ 确认放款成功',
+    }
+
+    showToast('success', successMessages[decision])
+  }
+
+  const handleSaveAnnotation = () => {
+    if (!reviewContent.trim()) {
+      showToast('error', '批注内容不能为空')
+      return
+    }
+    if (reviewContent.trim().length < 10) {
+      showToast('error', '批注内容至少需要10个字')
+      return
+    }
+
+    addAnnotation({
+      applicationId: selectedApp?.id || selectedAppId,
+      author: '李审核员',
+      authorRole: '高级审核员',
+      content: reviewContent.trim(),
+    })
+
+    setReviewContent('')
+    setSaveSuccess(true)
+    showToast('success', '✓ 批注保存成功')
+  }
 
   const InfoRow = ({ icon: Icon, label, value }: { icon: typeof User; label: string; value: string }) => (
     <div className="flex items-start gap-2.5 py-2">
@@ -174,10 +472,23 @@ export default function Review() {
     )
   }
 
+  const displayStatus = selectedApp ? normalizeStatus(selectedApp.status) : 'reviewing'
+
   return (
     <div className="min-h-screen pb-8">
+      <style>{`
+        @keyframes fadeIn {
+          from { opacity: 0; transform: translateY(-10px); }
+          to { opacity: 1; transform: translateY(0); }
+        }
+        .animate-fade-in {
+          animation: fadeIn 0.3s ease-out;
+        }
+      `}</style>
+
+      <Toast toast={toast} />
+
       <div className="px-6 py-6 page-fade-enter">
-        {/* 页面头部 */}
         <div className="card-base p-5 mb-5">
           <div className="flex items-start justify-between gap-6">
             <div className="flex-shrink-0">
@@ -246,9 +557,7 @@ export default function Review() {
           </div>
         </div>
 
-        {/* 三栏主体布局 */}
         <div className="grid grid-cols-12 gap-5">
-          {/* 左栏 - 申请列表 */}
           <div className="col-span-3 flex flex-col gap-4">
             <div className="card-base p-4">
               <div className="flex items-center gap-2 mb-4">
@@ -357,7 +666,7 @@ export default function Review() {
                         </div>
                         <div className="flex items-center gap-1.5 mt-2.5">
                           <RiskBadge level={app.riskLevel} size="sm" />
-                          <StatusTag status={app.status} size="sm" />
+                          <StatusTag status={normalizeStatus(app.status)} size="sm" />
                         </div>
                       </div>
                     </div>
@@ -367,25 +676,23 @@ export default function Review() {
             </div>
           </div>
 
-          {/* 中栏 - 审核主面板 */}
           <div className="col-span-6 flex flex-col gap-5">
-            {/* 申请摘要卡 */}
             <div className="card-base p-5">
               <div className="flex items-start justify-between mb-5">
                 <div className="flex items-center gap-4">
                   <div className="w-14 h-14 rounded-2xl bg-primary-100 flex items-center justify-center text-xl font-bold text-primary-700">
-                    {getInitials(selectedApp.name)}
+                    {selectedApp && getInitials(selectedApp.name)}
                   </div>
                   <div>
                     <div className="flex items-center gap-3">
-                      <h2 className="text-xl font-bold text-slate-900">{selectedApp.name}</h2>
-                      <RiskBadge level={selectedApp.riskLevel} size="md" showLabel />
-                      <StatusTag status="审核中" size="md" />
+                      <h2 className="text-xl font-bold text-slate-900">{selectedApp?.name}</h2>
+                      <RiskBadge level={selectedApp?.riskLevel || 'C'} size="md" showLabel />
+                      <StatusTag status={displayStatus} size="md" />
                     </div>
                     <div className="mt-1 flex items-center gap-3 text-xs text-slate-400">
-                      <span>申请编号：LA20260609001</span>
+                      <span>申请编号：LA2026060900{selectedApp?.id || '1'}</span>
                       <span>·</span>
-                      <span>提交时间：2026-06-09 09:15</span>
+                      <span>提交时间：{selectedApp?.applyTime || '2026-06-09 09:15'}</span>
                     </div>
                   </div>
                 </div>
@@ -430,8 +737,8 @@ export default function Review() {
                     <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">贷款信息</span>
                   </div>
                   <div className="space-y-0.5">
-                    <InfoRow icon={Banknote} label="金额" value={formatMoney(selectedApp.amount)} />
-                    <InfoRow icon={Clock} label="期限" value={`${selectedApp.term}个月`} />
+                    <InfoRow icon={Banknote} label="金额" value={formatMoney(selectedApp?.amount || 0)} />
+                    <InfoRow icon={Clock} label="期限" value={`${selectedApp?.term || 12}个月`} />
                     <InfoRow icon={FileText} label="产品" value="消费贷" />
                     <InfoRow icon={FileText} label="用途" value="家居装修" />
                     <InfoRow icon={CreditCard} label="还款方式" value="等额本息" />
@@ -465,7 +772,6 @@ export default function Review() {
               </div>
             </div>
 
-            {/* 人工批注区 */}
             <div className="card-base p-5">
               <div className="flex items-center justify-between mb-4">
                 <div className="flex items-center gap-2">
@@ -475,12 +781,12 @@ export default function Review() {
                 <span className="text-xs text-slate-400">将作为审批决策的重要依据</span>
               </div>
 
-              {mockComments.length > 0 && (
+              {mergedComments.length > 0 && (
                 <div className="mb-5 space-y-3">
                   <div className="text-xs font-medium text-slate-500 mb-2">历史批注</div>
                   <div className="relative pl-5">
                     <div className="absolute left-1.5 top-1 bottom-1 w-0.5 bg-slate-100 rounded-full" />
-                    {mockComments.map((comment) => (
+                    {mergedComments.map((comment) => (
                       <div key={comment.id} className="relative mb-4 last:mb-0">
                         <div
                           className={cn(
@@ -552,12 +858,29 @@ export default function Review() {
                       重新上传
                     </button>
                   </div>
-                  <span className="text-xs text-slate-400">{reviewContent.length}/500字</span>
+                  <div className="flex items-center gap-4">
+                    <span className="text-xs text-slate-400">{reviewContent.length}/500字</span>
+                    <button
+                      onClick={handleSaveAnnotation}
+                      className={cn(
+                        'px-4 py-2 rounded-lg text-sm font-semibold transition-all duration-200',
+                        'bg-primary-600 hover:bg-primary-700 text-white shadow-sm hover:shadow-md',
+                        'active:scale-[0.98]'
+                      )}
+                    >
+                      保存批注
+                    </button>
+                  </div>
                 </div>
+                {saveSuccess && (
+                  <div className="mt-3 px-4 py-2 rounded-lg bg-emerald-50 border border-emerald-200 flex items-center gap-2 animate-fade-in">
+                    <Check className="w-4 h-4 text-emerald-600" />
+                    <span className="text-sm font-medium text-emerald-700">批注已成功保存</span>
+                  </div>
+                )}
               </div>
             </div>
 
-            {/* 补件清单 */}
             {showSupplements && (
               <div className="card-base p-5">
                 <div className="flex items-center justify-between mb-4">
@@ -617,9 +940,7 @@ export default function Review() {
             )}
           </div>
 
-          {/* 右栏 - 操作+轨迹 */}
           <div className="col-span-3 flex flex-col gap-5">
-            {/* 审核操作面板 */}
             <div className="card-base p-5">
               <div className="flex items-center gap-2 mb-5">
                 <div className="w-1 h-5 bg-primary-500 rounded-full" />
@@ -627,11 +948,11 @@ export default function Review() {
               </div>
 
               <div className="space-y-3 mb-5">
-                <DecisionButton icon={Check} label="通过审批" variant="success" size="large" />
-                <DecisionButton icon={RefreshCw} label="退回补件" variant="warning" />
-                <DecisionButton icon={X} label="拒绝申请" variant="danger" />
-                <DecisionButton icon={ArrowUpCircle} label="提交复审" variant="info" />
-                <DecisionButton icon={Banknote} label="确认放款" variant="confirm" />
+                <DecisionButton icon={Check} label="通过审批" variant="success" size="large" onClick={() => handleDecision('approve')} />
+                <DecisionButton icon={RefreshCw} label="退回补件" variant="warning" onClick={() => handleDecision('supplement')} />
+                <DecisionButton icon={X} label="拒绝申请" variant="danger" onClick={() => handleDecision('reject')} />
+                <DecisionButton icon={ArrowUpCircle} label="提交复审" variant="info" onClick={() => handleDecision('review')} />
+                <DecisionButton icon={Banknote} label="确认放款" variant="confirm" onClick={() => handleDecision('disburse')} />
               </div>
 
               <div className="space-y-4 pt-4 border-t border-slate-100">
@@ -689,13 +1010,12 @@ export default function Review() {
               </div>
             </div>
 
-            {/* 审核轨迹时间轴 */}
             <div className="card-base p-5">
               <div className="flex items-center gap-2 mb-5">
                 <div className="w-1 h-5 bg-accent-500 rounded-full" />
                 <h3 className="text-base font-semibold text-slate-900">审核流程轨迹</h3>
               </div>
-              <Timeline items={auditTimeline} />
+              <Timeline items={mergedTimeline} />
             </div>
           </div>
         </div>

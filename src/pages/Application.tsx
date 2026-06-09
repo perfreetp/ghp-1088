@@ -101,6 +101,7 @@ export default function Application() {
   const { uploads, setUploadedFiles, clearUploadedFiles } = useAppStore()
 
   const faceInputRef = useRef<HTMLInputElement>(null)
+  const idFrontInputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     const current = uploads[APPLICATION_ID]?.['idCardFront']
@@ -187,7 +188,17 @@ export default function Application() {
   const faceCaptureFiles = getUploadedFiles('faceCapture')
 
   const renderIdCardFrontPreview = (file: UploadedFileInfo) => (
-    <div className="relative rounded-2xl border-2 border-emerald-200 bg-emerald-50/50 overflow-hidden group">
+    <div
+      className="relative rounded-2xl border-2 border-emerald-200 bg-emerald-50/50 overflow-hidden group cursor-pointer transition-all duration-200 hover:border-primary-400"
+      onClick={handleIdFrontClick}
+    >
+      <input
+        ref={idFrontInputRef}
+        type="file"
+        accept="image/*"
+        onChange={handleIdFrontChange}
+        className="hidden"
+      />
       {file.previewUrl ? (
         <div className="aspect-[1.58/1] bg-slate-100 flex items-center justify-center relative overflow-hidden">
           <img
@@ -270,11 +281,30 @@ export default function Application() {
     }
   }
 
+  const handleIdFrontClick = (e: React.MouseEvent) => {
+    e.stopPropagation()
+    idFrontInputRef.current?.click()
+  }
+
+  const handleIdFrontChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    handleFilesSelected('idCardFront', false)(e.target.files)
+    if (idFrontInputRef.current) {
+      idFrontInputRef.current.value = ''
+    }
+  }
+
   const renderFaceCapture = () => {
     const file = faceCaptureFiles?.[0]
-    if (file) {
-      return (
-        <div className="aspect-square flex items-center justify-center">
+    return (
+      <div className="aspect-square flex items-center justify-center">
+        <input
+          ref={faceInputRef}
+          type="file"
+          accept="image/*"
+          onChange={handleFaceChange}
+          className="hidden"
+        />
+        {file ? (
           <div className="relative group cursor-pointer" onClick={handleFaceClick}>
             <div
               className="w-[200px] h-[200px] rounded-full overflow-hidden border-2 border-emerald-200 transition-all duration-200 group-hover:border-primary-400"
@@ -321,20 +351,8 @@ export default function Application() {
               <X className="w-3.5 h-3.5" />
             </button>
           </div>
-        </div>
-      )
-    }
-
-    return (
-      <div className="aspect-square flex items-center justify-center">
-        <div className="relative cursor-pointer group" onClick={handleFaceClick}>
-          <input
-            ref={faceInputRef}
-            type="file"
-            accept="image/*"
-            onChange={handleFaceChange}
-            className="hidden"
-          />
+        ) : (
+          <div className="relative cursor-pointer group" onClick={handleFaceClick}>
           <div
             className="w-[200px] h-[200px] rounded-full border-2 border-dashed border-slate-300 flex flex-col items-center justify-center gap-3 transition-all duration-200 hover:border-primary-400 hover:bg-primary-50/30"
             style={{ width: '200px', height: '200px' }}
@@ -349,7 +367,8 @@ export default function Application() {
               <p className="text-xs text-slate-400 mt-1">请保持光线充足，正对镜头</p>
             </div>
           </div>
-        </div>
+          </div>
+        )}
       </div>
     )
   }

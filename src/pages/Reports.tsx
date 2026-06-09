@@ -60,9 +60,11 @@ import type { ChannelStat, CityStat, ProductStat } from '@/data/reports'
 
 const TIME_OPTIONS = ['本月', '上月', '本季度', '今年', '自定义'] as const
 const CHANNEL_OPTIONS = ['全部渠道', '线上APP', '合作门店', '电话营销', '线下推广', '老客户推荐', '第三方导流'] as const
-const CITY_OPTIONS = ['全部城市', 'Top10城市'] as const
+const CITY_OPTIONS_BASE = ['全部城市', 'Top10城市'] as const
 const PRODUCT_OPTIONS = ['全部产品', '消费贷', '经营贷', '装修贷', '教育贷', '医疗贷'] as const
 const TABS = ['渠道分析', '城市分析', '产品分析', '综合对比'] as const
+
+const CITY_OPTIONS = [...CITY_OPTIONS_BASE, ...cityStats.map((c) => c.city)] as const
 
 const TAB_ICONS = [BarChart3, BarChart3, PieChartIcon, Layers]
 
@@ -133,28 +135,85 @@ export default function Reports() {
     alert('功能开发中')
   }, [])
 
-  const totalApplyCount = useMemo(
-    () => channelStats.reduce((s, c) => s + c.applyCount, 0),
-    []
+  const filteredChannels = useMemo(() => {
+    let result = [...channelStats]
+    if (channelFilter !== '全部渠道') {
+      result = result.filter((c) => c.channel === channelFilter)
+    }
+    return result
+  }, [channelFilter])
+
+  const filteredRiskLevels = useMemo(() => {
+    if (channelFilter === '全部渠道') return channelRiskLevels
+    return channelRiskLevels.filter((r) => r.channel === channelFilter)
+  }, [channelFilter])
+
+  const filteredCities = useMemo(() => {
+    let result = [...cityStats]
+    if (cityFilter === 'Top10城市') {
+      result = result.sort((a, b) => b.applyAmount - a.applyAmount).slice(0, 10)
+    } else if (cityFilter !== '全部城市') {
+      result = result.filter((c) => c.city === cityFilter)
+    }
+    return result
+  }, [cityFilter])
+
+  const filteredProducts = useMemo(() => {
+    let result = [...productStats]
+    if (productFilter !== '全部产品') {
+      result = result.filter((p) => p.product === productFilter)
+    }
+    return result
+  }, [productFilter])
+
+  const filteredCityHeatmap = useMemo(() => {
+    if (cityFilter === '全部城市' || cityFilter === 'Top10城市') return cityHeatmap
+    return cityHeatmap
+      .map((region) => ({
+        ...region,
+        cities: region.cities.filter((c) => c.name === cityFilter),
+      }))
+      .filter((region) => region.cities.length > 0)
+  }, [cityFilter])
+
+  const summaryMetrics = useMemo(() => {
+    const source = filteredChannels.length > 0 ? filteredChannels : filteredProducts.length > 0 ? filteredProducts : channelStats
+    const totalApplyCount = source.reduce((s, c) => s + c.applyCount, 0)
+    const totalApproveCount = source.reduce((s, c) => s + c.approveCount, 0)
+    const totalApproveAmount = source.reduce((s, c) => s + c.approveAmount, 0)
+    const avgRate =
+      totalApproveAmount > 0
+        ? source.reduce((s, c) => s + (c as any).avgRate * c.approveAmount, 0) / totalApproveAmount
+        : 0
+    const avgOverdueRate =
+      totalApplyCount > 0
+        ? source.reduce((s, c) => s + c.overdueRate * c.applyCount, 0) / totalApplyCount
+        : 0
+    return { totalApplyCount, totalApproveCount, totalApproveAmount, avgRate, avgOverdueRate }
+  }, [filteredChannels, filteredProducts])
+
+  const filteredTotalApplyCount = useMemo(
+    () => filteredChannels.reduce((s, c) => s + c.applyCount, 0),
+    [filteredChannels]
   )
 
   const channelBarData = useMemo(() => {
-    return channelStats.map((c) => ({
+    return filteredChannels.map((c) => ({
       name: c.channel,
       申请量: c.applyCount,
       通过量: c.approveCount,
       放款额: Math.round(c.approveAmount / 10000),
     }))
-  }, [])
+  }, [filteredChannels])
 
   const channelTableData = useMemo(() => {
-    return channelStats.map((c) => {
-      const risk = channelRiskLevels.find((r) => r.channel === c.channel)
+    return filteredChannels.map((c) => {
+      const risk = filteredRiskLevels.find((r) => r.channel === c.channel)
       const total = c.applyCount
       return {
         ...c,
         rejectCount: c.applyCount - c.approveCount,
-        applyRatio: (c.applyCount / totalApplyCount) * 100,
+        applyRatio: filteredTotalApplyCount > 0 ? (c.applyCount / filteredTotalApplyCount) * 100 : 0,
         levelA: risk?.levelA ?? 0,
         levelB: risk?.levelB ?? 0,
         levelC: risk?.levelC ?? 0,
@@ -164,7 +223,7 @@ export default function Reports() {
         _total: total,
       }
     })
-  }, [totalApplyCount])
+  }, [filteredChannels, filteredRiskLevels, filteredTotalApplyCount])
 
   const channelTableTotals = useMemo(() => {
     const t = channelTableData.reduce(
@@ -186,23 +245,23 @@ export default function Reports() {
   }, [channelTableData])
 
   const overdueBarData = useMemo(() => {
-    return [...channelStats]
+    return [...filteredChannels]
       .map((c) => ({ name: c.channel, 逾期率: c.overdueRate }))
       .sort((a, b) => a.逾期率 - b.逾期率)
-  }, [])
+  }, [filteredChannels])
 
   const cityBarData = useMemo(() => {
-    return [...cityStats]
+    return [...filteredCities]
       .sort((a, b) => b.applyAmount - a.applyAmount)
       .map((c) => ({
         name: c.city,
         申请金额: Math.round(c.applyAmount / 10000),
         放款金额: Math.round(c.approveAmount / 10000),
       }))
-  }, [])
+  }, [filteredCities])
 
   const cityTableData = useMemo(() => {
-    return cityStats.map((c) => {
+    return filteredCities.map((c) => {
       const total = c.riskLevelA + c.riskLevelB + c.riskLevelC + c.riskLevelD + c.riskLevelE
       const de = c.riskLevelD + c.riskLevelE
       return {
@@ -211,30 +270,37 @@ export default function Reports() {
         deRatio: total > 0 ? (de / total) * 100 : 0,
       }
     })
-  }, [])
+  }, [filteredCities])
+
+  const pieFilteredTotal = useMemo(
+    () => filteredProducts.reduce((s, p) => s + p.approveAmount, 0),
+    [filteredProducts]
+  )
 
   const pieData = useMemo(() => {
-    return productStats.map((p) => ({
+    return filteredProducts.map((p) => ({
       name: p.product,
       value: p.approveAmount,
-      ratio: reportSummary.totalApproveAmount > 0 ? (p.approveAmount / reportSummary.totalApproveAmount) * 100 : 0,
+      ratio: pieFilteredTotal > 0 ? (p.approveAmount / pieFilteredTotal) * 100 : 0,
     }))
-  }, [])
+  }, [filteredProducts, pieFilteredTotal])
 
   const scatterData = useMemo(() => {
-    return productStats.map((p) => ({
+    return filteredProducts.map((p) => ({
       name: p.product,
       利率: p.avgRate,
       逾期率: p.overdueRate,
       放款额: p.approveAmount,
     }))
-  }, [])
+  }, [filteredProducts])
+
+  const productTableData = useMemo(() => filteredProducts, [filteredProducts])
 
   const heatmapMaxValue = useMemo(() => {
     let max = 0
-    cityHeatmap.forEach((r) => r.cities.forEach((c) => (max = Math.max(max, c.value))))
-    return max
-  }, [])
+    filteredCityHeatmap.forEach((r) => r.cities.forEach((c) => (max = Math.max(max, c.value))))
+    return max || 1
+  }, [filteredCityHeatmap])
 
   const channelColumns: DataTableColumn<any>[] = [
     {
@@ -487,17 +553,27 @@ export default function Reports() {
         r.levelD,
         r.levelE,
       ])
+      const chAvgRate =
+        channelTableTotals.approveAmount > 0
+          ? channelTableData.reduce((s, r) => s + r.avgRate * r.approveAmount, 0) / channelTableTotals.approveAmount
+          : 0
+      const chAvgOverdue =
+        channelTableTotals.applyCount > 0
+          ? channelTableData.reduce((s, r) => s + r.overdueRate * r.applyCount, 0) / channelTableTotals.applyCount
+          : 0
+      const chApproveRate =
+        channelTableTotals.applyCount > 0 ? (channelTableTotals.approveCount / channelTableTotals.applyCount) * 100 : 0
       const channelTotal = [
         '合计',
         channelTableTotals.applyCount,
         '100.00%',
         channelTableTotals.approveCount,
-        pct(reportSummary.totalApproveRate, 2),
+        pct(chApproveRate, 2),
         channelTableTotals.rejectCount,
         formatMoney(channelTableTotals.approveAmount),
-        formatMoney(channelTableTotals.approveAmount / channelTableTotals.approveCount),
-        '17.80%',
-        '6.82%',
+        formatMoney(channelTableTotals.approveCount > 0 ? channelTableTotals.approveAmount / channelTableTotals.approveCount : 0),
+        pct(chAvgRate, 2),
+        pct(chAvgOverdue, 2),
         channelTableTotals.levelA,
         channelTableTotals.levelB,
         channelTableTotals.levelC,
@@ -547,23 +623,26 @@ export default function Reports() {
       const cityTotals = cityTableData.reduce(
         (acc, r) => {
           acc.applyCount += r.applyCount
+          acc.approveCount += r.approveCount
           acc.approveAmount += r.approveAmount
           acc.riskA += r.riskLevelA
           acc.riskDE += r.riskLevelD + r.riskLevelE
           acc.total += r.riskLevelA + r.riskLevelB + r.riskLevelC + r.riskLevelD + r.riskLevelE
           return acc
         },
-        { applyCount: 0, approveAmount: 0, riskA: 0, riskDE: 0, total: 0 }
+        { applyCount: 0, approveCount: 0, approveAmount: 0, riskA: 0, riskDE: 0, total: 0 }
       )
+      const cityApproveRate = cityTotals.applyCount > 0 ? (cityTotals.approveCount / cityTotals.applyCount) * 100 : 0
+      const cityAvgAmount = cityTotals.approveCount > 0 ? cityTotals.approveAmount / cityTotals.approveCount : 0
       const cityTotal = [
         '合计',
         cityTotals.applyCount,
-        pct(reportSummary.totalApproveRate, 2),
+        pct(cityApproveRate, 2),
         formatMoney(cityTotals.approveAmount),
-        formatMoney(reportSummary.totalApproveAmount / reportSummary.totalApproveCount),
+        formatMoney(cityAvgAmount),
         pct(cityTotals.total > 0 ? (cityTotals.riskA / cityTotals.total) * 100 : 0, 2),
         pct(cityTotals.total > 0 ? (cityTotals.riskDE / cityTotals.total) * 100 : 0, 2),
-        '6.82%',
+        pct(summaryMetrics.avgOverdueRate, 2),
       ]
       const wsCity = XLSX.utils.aoa_to_sheet([cityHeader, ...cityRows, cityTotal])
       wsCity['!cols'] = [
@@ -586,7 +665,7 @@ export default function Reports() {
       const productHeader = [
         '产品名称', '申请笔数', '放款总额', '平均期限', '平均利率', '笔均金额', '逾期金额', '逾期率', '预估收益率'
       ]
-      const productRows = productStats.map((p) => {
+      const productRows = productTableData.map((p) => {
         const avgAmt = p.approveCount > 0 ? p.approveAmount / p.approveCount : 0
         const overdueAmt = (p.approveAmount * p.overdueRate) / 100
         const expectedReturn = p.avgRate - p.overdueRate * 0.4
@@ -602,7 +681,7 @@ export default function Reports() {
           pct(expectedReturn, 2),
         ]
       })
-      const productTotals = productStats.reduce(
+      const productTotals = productTableData.reduce(
         (acc, p) => {
           acc.count += p.approveCount
           acc.amount += p.approveAmount
@@ -617,12 +696,12 @@ export default function Reports() {
         '合计',
         productTotals.count,
         formatMoney(productTotals.amount),
-        `${Math.round(productTotals.term / productTotals.count)}期`,
+        productTotals.count > 0 ? `${Math.round(productTotals.term / productTotals.count)}期` : '0期',
         pct(productTotals.amount > 0 ? productTotals.rateSum / productTotals.amount : 0, 2),
-        formatMoney(productTotals.amount / productTotals.count),
+        formatMoney(productTotals.count > 0 ? productTotals.amount / productTotals.count : 0),
         formatMoney(productTotals.overdueAmt),
         pct(productTotals.amount > 0 ? (productTotals.overdueAmt / productTotals.amount) * 100 : 0, 2),
-        pct(reportSummary.totalApproveRate, 2),
+        pct(productTotals.amount > 0 ? productTotals.rateSum / productTotals.amount - (productTotals.overdueAmt / productTotals.amount) * 0.4 : 0, 2),
       ]
       const wsProduct = XLSX.utils.aoa_to_sheet([productHeader, ...productRows, productTotal])
       wsProduct['!cols'] = [
@@ -647,7 +726,7 @@ export default function Reports() {
     } finally {
       setExporting(false)
     }
-  }, [getDateStamp, channelTableData, channelTableTotals, cityTableData, productStats])
+  }, [getDateStamp, channelTableData, channelTableTotals, cityTableData, productTableData, summaryMetrics])
 
   const handleExportPDF = useCallback(async () => {
     setExporting(true)
@@ -691,11 +770,11 @@ export default function Reports() {
       doc.text(`生成时间：${nowStr}`, pageWidth / 2, 36, { align: 'center' })
 
       const kpiData = [
-        { label: '总申请量', value: reportSummary.totalApplyCount.toLocaleString() + '笔', color: [59, 130, 246] },
-        { label: '通过量', value: reportSummary.totalApproveCount.toLocaleString() + '笔', color: [16, 185, 129] },
-        { label: '放款额', value: formatWan(reportSummary.totalApproveAmount), color: [20, 184, 166] },
-        { label: '平均利率', value: '17.8%', color: [139, 92, 246] },
-        { label: '逾期率', value: '6.82%', color: [249, 115, 22] },
+        { label: '总申请量', value: summaryMetrics.totalApplyCount.toLocaleString() + '笔', color: [59, 130, 246] },
+        { label: '通过量', value: summaryMetrics.totalApproveCount.toLocaleString() + '笔', color: [16, 185, 129] },
+        { label: '放款额', value: formatWan(summaryMetrics.totalApproveAmount), color: [20, 184, 166] },
+        { label: '平均利率', value: `${summaryMetrics.avgRate.toFixed(1)}%`, color: [139, 92, 246] },
+        { label: '逾期率', value: `${summaryMetrics.avgOverdueRate.toFixed(2)}%`, color: [249, 115, 22] },
       ]
       const kpiY = 48
       const kpiW = (pageWidth - 16 - 4 * 4) / 5
@@ -728,17 +807,27 @@ export default function Reports() {
         pct(r.overdueRate, 2),
         r.levelA, r.levelB, r.levelC, r.levelD, r.levelE,
       ])
+      const pdfChAvgRate =
+        channelTableTotals.approveAmount > 0
+          ? channelTableData.reduce((s, r) => s + r.avgRate * r.approveAmount, 0) / channelTableTotals.approveAmount
+          : 0
+      const pdfChAvgOverdue =
+        channelTableTotals.applyCount > 0
+          ? channelTableData.reduce((s, r) => s + r.overdueRate * r.applyCount, 0) / channelTableTotals.applyCount
+          : 0
+      const pdfChApproveRate =
+        channelTableTotals.applyCount > 0 ? (channelTableTotals.approveCount / channelTableTotals.applyCount) * 100 : 0
       channelBody.push([
         '合计',
         channelTableTotals.applyCount.toLocaleString(),
         '100.00%',
         channelTableTotals.approveCount.toLocaleString(),
-        pct(reportSummary.totalApproveRate, 2),
+        pct(pdfChApproveRate, 2),
         channelTableTotals.rejectCount.toLocaleString(),
         formatWan(channelTableTotals.approveAmount),
-        formatWan(channelTableTotals.approveAmount / channelTableTotals.approveCount),
-        '17.80%',
-        '6.82%',
+        formatWan(channelTableTotals.approveCount > 0 ? channelTableTotals.approveAmount / channelTableTotals.approveCount : 0),
+        pct(pdfChAvgRate, 2),
+        pct(pdfChAvgOverdue, 2),
         channelTableTotals.levelA,
         channelTableTotals.levelB,
         channelTableTotals.levelC,
@@ -803,7 +892,7 @@ export default function Reports() {
 
       autoTable(doc, {
         startY: (doc as any).lastAutoTable.finalY + 6,
-        head: [['Top10城市风险分析']],
+        head: [[`${cityFilter === 'Top10城市' ? 'Top10城市' : cityFilter === '全部城市' ? 'Top10城市' : '筛选城市'}风险分析`]],
         headStyles: { fillColor: [30, 58, 138], fontSize: 11, textColor: 255, halign: 'center' },
         body: [],
         margin: { left: 8, right: 8 },
@@ -824,7 +913,7 @@ export default function Reports() {
         margin: { left: 8, right: 8 },
       })
 
-      const productBody: (string | number)[][] = productStats.map((p) => {
+      const productBody: (string | number)[][] = productTableData.map((p) => {
         const avgAmt = p.approveCount > 0 ? p.approveAmount / p.approveCount : 0
         const overdueAmt = (p.approveAmount * p.overdueRate) / 100
         const expectedReturn = p.avgRate - p.overdueRate * 0.4
@@ -840,7 +929,7 @@ export default function Reports() {
           pct(expectedReturn, 2),
         ]
       })
-      const prodT = productStats.reduce(
+      const prodT = productTableData.reduce(
         (acc, p) => {
           acc.c += p.approveCount
           acc.a += p.approveAmount
@@ -851,16 +940,18 @@ export default function Reports() {
         },
         { c: 0, a: 0, t: 0, r: 0, o: 0 }
       )
+      const prodAvgRate = prodT.a > 0 ? prodT.r / prodT.a : 0
+      const prodOverduePct = prodT.a > 0 ? (prodT.o / prodT.a) * 100 : 0
       productBody.push([
         '合计',
         prodT.c.toLocaleString(),
         formatWan(prodT.a),
-        `${Math.round(prodT.t / prodT.c)}期`,
-        pct(prodT.a > 0 ? prodT.r / prodT.a : 0, 2),
-        formatWan(prodT.a / prodT.c),
+        prodT.c > 0 ? `${Math.round(prodT.t / prodT.c)}期` : '0期',
+        pct(prodAvgRate, 2),
+        formatWan(prodT.c > 0 ? prodT.a / prodT.c : 0),
         formatWan(prodT.o),
-        pct(prodT.a > 0 ? (prodT.o / prodT.a) * 100 : 0, 2),
-        pct(17.8 - 6.82 * 0.4, 2),
+        pct(prodOverduePct, 2),
+        pct(prodAvgRate - prodOverduePct * 0.4, 2),
       ])
 
       autoTable(doc, {
@@ -906,7 +997,7 @@ export default function Reports() {
     } finally {
       setExporting(false)
     }
-  }, [getDateStamp, getFilterSummary, channelTableData, channelTableTotals, cityTableData, productStats])
+  }, [getDateStamp, getFilterSummary, channelTableData, channelTableTotals, cityTableData, productTableData, summaryMetrics, cityFilter])
 
   return (
     <div className="page-fade-enter space-y-6">
@@ -1052,7 +1143,7 @@ export default function Reports() {
       <div className="grid grid-cols-5 gap-6">
         <StatCard
           title="总申请量"
-          value="4,856笔"
+          value={`${summaryMetrics.totalApplyCount.toLocaleString()}笔`}
           icon={FileTextIcon}
           trend="+8.2%"
           trendUp={true}
@@ -1060,15 +1151,15 @@ export default function Reports() {
         />
         <StatCard
           title="审批通过量"
-          value="3,182笔"
+          value={`${summaryMetrics.totalApproveCount.toLocaleString()}笔`}
           icon={CheckCircle2}
-          trend="+2.1% 通过率65.5%"
+          trend={`+2.1% 通过率${summaryMetrics.totalApplyCount > 0 ? ((summaryMetrics.totalApproveCount / summaryMetrics.totalApplyCount) * 100).toFixed(1) : '0.0'}%`}
           trendUp={true}
           gradient="linear-gradient(135deg, #34d399 0%, #10b981 100%)"
         />
         <StatCard
           title="实际放款额"
-          value="¥5.18亿"
+          value={formatWan(summaryMetrics.totalApproveAmount)}
           icon={Wallet}
           trend="+11.5%"
           trendUp={true}
@@ -1076,7 +1167,7 @@ export default function Reports() {
         />
         <StatCard
           title="平均利率"
-          value="17.8%"
+          value={`${summaryMetrics.avgRate.toFixed(1)}%`}
           icon={Percent}
           trend="-0.3%"
           trendUp={false}
@@ -1084,7 +1175,7 @@ export default function Reports() {
         />
         <StatCard
           title="当期逾期率"
-          value="6.82%"
+          value={`${summaryMetrics.avgOverdueRate.toFixed(2)}%`}
           icon={AlertTriangle}
           trend="+0.5%"
           trendUp={false}
@@ -1223,16 +1314,15 @@ export default function Reports() {
                           <td className="px-4 py-3 text-right font-mono">{channelTableTotals.applyCount.toLocaleString()}</td>
                           <td className="px-4 py-3 text-right font-mono text-slate-600">100.0%</td>
                           <td className="px-4 py-3 text-right font-mono text-emerald-600">{channelTableTotals.approveCount.toLocaleString()}</td>
-                          <td className="px-4 py-3 text-right font-mono">{pct(reportSummary.totalApproveRate)}</td>
+                          <td className="px-4 py-3 text-right font-mono">{pct(channelTableTotals.applyCount > 0 ? (channelTableTotals.approveCount / channelTableTotals.applyCount) * 100 : 0)}</td>
                           <td className="px-4 py-3 text-right font-mono text-red-500">{channelTableTotals.rejectCount.toLocaleString()}</td>
                           <td className="px-4 py-3 text-right font-mono">{formatWan(channelTableTotals.approveAmount)}</td>
-                          <td className="px-4 py-3 text-right font-mono">{formatWan(channelTableTotals.approveAmount / channelTableTotals.approveCount)}</td>
-                          <td className="px-4 py-3 text-right font-mono">17.8%</td>
-                          <td className="px-4 py-3 text-right font-mono text-orange-600">6.82%</td>
+                          <td className="px-4 py-3 text-right font-mono">{formatWan(channelTableTotals.approveCount > 0 ? channelTableTotals.approveAmount / channelTableTotals.approveCount : 0)}</td>
+                          <td className="px-4 py-3 text-right font-mono">{pct(summaryMetrics.avgRate)}</td>
+                          <td className="px-4 py-3 text-right font-mono text-orange-600">{pct(summaryMetrics.avgOverdueRate, 2)}</td>
                           <td className="px-4 py-3">
                             <div className="flex items-center gap-1.5">
                               {(['A', 'B', 'C', 'D', 'E'] as const).map((lvl, i) => {
-                                const k = `level${lvl}` as const
                                 const counts = [channelTableTotals.levelA, channelTableTotals.levelB, channelTableTotals.levelC, channelTableTotals.levelD, channelTableTotals.levelE]
                                 return (
                                   <div
@@ -1327,7 +1417,7 @@ export default function Reports() {
               <div className="card-base p-6">
                 <h3 className="mb-5 text-base font-semibold text-slate-800">城市分布热力图</h3>
                 <div className="space-y-5">
-                  {cityHeatmap.map((region) => (
+                  {filteredCityHeatmap.map((region) => (
                     <div key={region.region} className="flex items-start gap-4">
                       <div className="w-14 shrink-0 pt-1.5 text-sm font-semibold text-slate-600 text-right">{region.region}</div>
                       <div className="flex flex-wrap gap-2 flex-1">
@@ -1482,7 +1572,7 @@ export default function Reports() {
                 <h3 className="mb-4 text-base font-semibold text-slate-800">产品详细数据</h3>
                 <DataTable
                   columns={productColumns}
-                  data={productStats}
+                  data={productTableData}
                   rowKey="product"
                   hoverable={false}
                 />

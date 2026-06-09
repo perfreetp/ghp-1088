@@ -32,8 +32,8 @@ import {
   formatPhone,
   formatIdCard,
 } from '@/utils/format'
-import { useAppStore, getApplicationStatusLabel } from '@/store/useAppStore'
-import type { LoanApplication, AuditTrail } from '@/types'
+import { useAppStore } from '@/store/useAppStore'
+import type { AuditTrail } from '@/types'
 
 interface ApplicationItem {
   id: string
@@ -92,14 +92,7 @@ const mockComments: CommentItem[] = [
   { id: 'c3', author: '李审核', role: '复核员', time: '2026-06-09 11:30', content: '申请人负债收入比为45%，略高于阈值，但考虑到其稳定的工作单位和良好的历史还款记录，建议有条件通过。', type: 'decision', decision: '建议通过' },
 ]
 
-const baseAuditTimeline: TimelineItem[] = [
-  { title: '提交申请', time: '2026-06-09 09:15', operator: '借款人 张三', status: 'done' },
-  { title: '系统核验', time: '2026-06-09 09:16', operator: '系统', status: 'done' },
-  { title: '风险评分', time: '2026-06-09 09:17', operator: 'AI模型', description: '（675分）', status: 'done' },
-  { title: '分配审核', time: '2026-06-09 09:20', operator: '李审核员', status: 'current' },
-  { title: '主管复审', time: '等待中', status: 'pending' },
-  { title: '确认放款', time: '等待中', status: 'pending' },
-]
+
 
 const filterTabs = [
   { key: 'all', label: '全部', count: 18 },
@@ -111,6 +104,14 @@ const filterTabs = [
 const riskLevelOptions = ['全部', 'A级', 'B级', 'C级', 'D级', 'E级']
 const statusOptions = ['全部', '待审核', '审核中', '已通过', '已拒绝']
 const termOptions = [3, 6, 12, 18, 24, 36, 48, 60]
+
+const statusFilterMap: Record<string, string[]> = {
+  '全部': [],
+  '待审核': ['pending', 'verifying', 'scoring'],
+  '审核中': ['reviewing'],
+  '已通过': ['approved', 'disbursing', 'disbursed', 'completed'],
+  '已拒绝': ['rejected'],
+}
 
 const Toast = ({ toast }: { toast: ToastState }) => {
   useEffect(() => {}, [toast.visible])
@@ -251,25 +252,8 @@ export default function Review() {
 
   const mergedApplications: ApplicationItem[] = useMemo(() => {
     const byId = new Map<string, ApplicationItem>()
-    mockApplications.forEach((app) => byId.set(app.id, { ...app }))
-
-    storeApplications.forEach((storeApp) => {
-      const converted = convertStoreAppToItem(storeApp)
-      if (byId.has(storeApp.id)) {
-        const existing = byId.get(storeApp.id)!
-        byId.set(storeApp.id, {
-          ...existing,
-          ...converted,
-          status: normalizeStatus(storeApp.status as string),
-        })
-      } else {
-        byId.set(storeApp.id, {
-          ...converted,
-          status: normalizeStatus(storeApp.status as string),
-        })
-      }
-    })
-
+    mockApplications.forEach((app) => byId.set(app.id, convertStoreAppToItem(app)))
+    storeApplications.forEach((app) => byId.set(app.id, convertStoreAppToItem(app)))
     return Array.from(byId.values())
   }, [storeApplications])
 
@@ -284,7 +268,8 @@ export default function Review() {
   const filteredApplications = mergedApplications.filter((app) => {
     const matchesSearch = app.name.includes(searchQuery) || app.id.includes(searchQuery)
     const matchesRisk = riskFilter === '全部' || app.riskLevel === riskFilter.charAt(0)
-    const matchesStatus = statusFilter === '全部'
+    const allowedStatuses = statusFilterMap[statusFilter] || []
+    const matchesStatus = statusFilter === '全部' || allowedStatuses.includes(normalizeStatus(app.status))
     return matchesSearch && matchesRisk && matchesStatus
   })
 
@@ -302,6 +287,35 @@ export default function Review() {
     return [...storeComments, ...mockComments]
   }, [storeAnnotations, selectedAppId])
 
+  const baseTimelineForApp: TimelineItem[] = useMemo(() => {
+    const app = mergedApplications.find((a) => a.id === selectedAppId) || mergedApplications[0]
+    const appName = app?.name || '未知'
+    const applyTime = app?.applyTime || '2026-06-09 09:15'
+
+    const parseTime = (t: string): Date => {
+      try {
+        return new Date(t.replace(' ', 'T'))
+      } catch {
+        return new Date(t)
+      }
+    }
+    const base = parseTime(applyTime)
+    const addMin = (d: Date, n: number) => {
+      const nd = new Date(d)
+      nd.setMinutes(nd.getMinutes() + n)
+      return formatAuditTrailTime(nd.toISOString())
+    }
+
+    return [
+      { title: '提交申请', time: applyTime, operator: `借款人 ${appName}`, status: 'done' },
+      { title: '系统核验', time: addMin(base, 1), operator: '系统', status: 'done' },
+      { title: '风险评分', time: addMin(base, 2), operator: 'AI模型', description: '（675分）', status: 'done' },
+      { title: '分配审核', time: addMin(base, 5), operator: '李审核员', status: 'current' },
+      { title: '主管复审', time: '等待中', status: 'pending' },
+      { title: '确认放款', time: '等待中', status: 'pending' },
+    ]
+  }, [mergedApplications, selectedAppId])
+
   const mergedTimeline: TimelineItem[] = useMemo(() => {
     const appTrails = (storeAuditTrails[selectedAppId] as any[]) || []
     const trailItems: TimelineItem[] = appTrails.map((t, i) =>
@@ -317,16 +331,55 @@ export default function Review() {
       )
     )
 
-    if (trailItems.length === 0) return baseAuditTimeline
+    const allItems = [...baseTimelineForApp, ...trailItems]
 
-    const newItems = [...baseAuditTimeline]
-    const lastBaseIdx = newItems.length - 1
-    for (let i = 0; i < newItems.length; i++) {
-      if (i < lastBaseIdx) newItems[i] = { ...newItems[i], status: 'done' }
-      else if (i === lastBaseIdx) newItems[i] = { ...newItems[i], status: 'done' }
+    const getTimeValue = (item: TimelineItem): number => {
+      if (!item.time || item.time === '等待中') return Infinity
+      try {
+        const d = new Date(item.time.replace(' ', 'T'))
+        return d.getTime()
+      } catch {
+        return Infinity
+      }
     }
-    return [...newItems, ...trailItems]
-  }, [storeAuditTrails, selectedAppId])
+
+    allItems.sort((a, b) => getTimeValue(a) - getTimeValue(b))
+
+    const hasPending = allItems.some((it) => it.time === '等待中')
+    if (hasPending) {
+      const fixed: TimelineItem[] = []
+      let foundCurrent = false
+      for (let i = 0; i < allItems.length; i++) {
+        const item = allItems[i]
+        if (item.time === '等待中') {
+          fixed.push({ ...item, status: 'pending' })
+        } else {
+          const next = allItems[i + 1]
+          const isLastBeforePending = next && next.time === '等待中'
+          if (isLastBeforePending && !foundCurrent) {
+            fixed.push({ ...item, status: 'current' })
+            foundCurrent = true
+          } else {
+            fixed.push({ ...item, status: 'done' })
+          }
+        }
+      }
+      if (!foundCurrent && fixed.length > 0) {
+        for (let i = fixed.length - 1; i >= 0; i--) {
+          if (fixed[i].time !== '等待中') {
+            fixed[i] = { ...fixed[i], status: 'current' }
+            break
+          }
+        }
+      }
+      return fixed
+    }
+
+    return allItems.map((item, idx) => ({
+      ...item,
+      status: idx === allItems.length - 1 ? 'current' : 'done',
+    }))
+  }, [storeAuditTrails, selectedAppId, baseTimelineForApp])
 
   useEffect(() => {
     if (saveSuccess) {
@@ -337,6 +390,20 @@ export default function Review() {
 
   const handleDecision = (decision: 'approve' | 'reject' | 'supplement' | 'review' | 'disburse') => {
     if (!selectedApp) return
+
+    const currentStatus = normalizeStatus(selectedApp.status)
+    const statusCheck: Record<string, { disabled: boolean; msg: string }> = {
+      approve: { disabled: ['approved', 'disbursed', 'disbursing', 'completed'].includes(currentStatus), msg: '该申请已是通过/放款状态' },
+      reject: { disabled: currentStatus === 'rejected', msg: '该申请已是拒绝状态' },
+      supplement: { disabled: currentStatus === 'pending', msg: '该申请已是待补件状态' },
+      review: { disabled: currentStatus === 'reviewing' && isReviewedByManager, msg: '主管已完成复审，无需重复提交' },
+      disburse: { disabled: currentStatus === 'disbursed', msg: '该申请已是已放款状态' },
+    }
+    const check = statusCheck[decision]
+    if (check.disabled) {
+      showToast('error', check.msg)
+      return
+    }
 
     const applicationId = selectedApp.id
     const operator = decision === 'review' ? '张主管' : '李审核员'
@@ -442,12 +509,14 @@ export default function Review() {
     variant,
     size = 'normal',
     onClick,
+    disabled = false,
   }: {
     icon: typeof Check
     label: string
     variant: 'success' | 'warning' | 'danger' | 'info' | 'confirm'
     size?: 'normal' | 'large'
     onClick?: () => void
+    disabled?: boolean
   }) => {
     const variantClasses = {
       success: 'bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-600 shadow-emerald-200',
@@ -456,14 +525,17 @@ export default function Review() {
       info: 'bg-slate-600 hover:bg-slate-700 text-white border-slate-600 shadow-slate-200',
       confirm: 'bg-teal-700 hover:bg-teal-800 text-white border-teal-700 shadow-teal-200',
     }
+    const disabledClasses = 'opacity-50 cursor-not-allowed hover:shadow-sm active:scale-100 pointer-events-none'
 
     return (
       <button
         onClick={onClick}
+        disabled={disabled}
         className={cn(
           'w-full flex items-center justify-center gap-2.5 rounded-xl font-semibold border transition-all duration-200 shadow-sm hover:shadow-md active:scale-[0.98]',
           size === 'large' ? 'px-5 py-4 text-base' : 'px-4 py-3 text-sm',
-          variantClasses[variant]
+          variantClasses[variant],
+          disabled && disabledClasses
         )}
       >
         <Icon className={cn(size === 'large' ? 'w-5 h-5' : 'w-4 h-4')} />
@@ -473,6 +545,15 @@ export default function Review() {
   }
 
   const displayStatus = selectedApp ? normalizeStatus(selectedApp.status) : 'reviewing'
+
+  const disableApprove = ['approved', 'disbursed', 'disbursing', 'completed'].includes(displayStatus)
+  const disableReject = displayStatus === 'rejected'
+  const disableSupplement = displayStatus === 'pending'
+  const isReviewedByManager = (storeAuditTrails[selectedAppId] || []).some(
+    (t: any) => (t.node || '').includes('主管复审') || (t.node || '').includes('提交主管复审') || (t.operator || '') === '张主管'
+  )
+  const disableReview = displayStatus === 'reviewing' && isReviewedByManager
+  const disableDisburse = displayStatus === 'disbursed'
 
   return (
     <div className="min-h-screen pb-8">
@@ -948,11 +1029,11 @@ export default function Review() {
               </div>
 
               <div className="space-y-3 mb-5">
-                <DecisionButton icon={Check} label="通过审批" variant="success" size="large" onClick={() => handleDecision('approve')} />
-                <DecisionButton icon={RefreshCw} label="退回补件" variant="warning" onClick={() => handleDecision('supplement')} />
-                <DecisionButton icon={X} label="拒绝申请" variant="danger" onClick={() => handleDecision('reject')} />
-                <DecisionButton icon={ArrowUpCircle} label="提交复审" variant="info" onClick={() => handleDecision('review')} />
-                <DecisionButton icon={Banknote} label="确认放款" variant="confirm" onClick={() => handleDecision('disburse')} />
+                <DecisionButton icon={Check} label="通过审批" variant="success" size="large" onClick={() => handleDecision('approve')} disabled={disableApprove} />
+                <DecisionButton icon={RefreshCw} label="退回补件" variant="warning" onClick={() => handleDecision('supplement')} disabled={disableSupplement} />
+                <DecisionButton icon={X} label="拒绝申请" variant="danger" onClick={() => handleDecision('reject')} disabled={disableReject} />
+                <DecisionButton icon={ArrowUpCircle} label="提交复审" variant="info" onClick={() => handleDecision('review')} disabled={disableReview} />
+                <DecisionButton icon={Banknote} label="确认放款" variant="confirm" onClick={() => handleDecision('disburse')} disabled={disableDisburse} />
               </div>
 
               <div className="space-y-4 pt-4 border-t border-slate-100">
